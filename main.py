@@ -19,6 +19,21 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from app_context import (
+    APP_NAME,
+    AppContext,
+    DEFAULT_TRANSLATION_MODEL,
+    build_app_context,
+    resolve_composition_model,
+)
+from audio.io import EXPORT_FORMATS, export_file_filter, probe, save
+from audio.render import (
+    RenderCache,
+    estimate_mix_duration_ms,
+    estimate_track_duration_ms,
+    render_mix,
+    render_track,
+)
 from gui.dialogs.align_dialog import AlignDialog, AlignTrack
 from gui.dialogs.channels_dialog import ChannelsDialog
 from gui.dialogs.cut_dialog import CutDialog
@@ -39,36 +54,19 @@ from gui.widgets.chat_window import ChatWindow, PromptSubmission
 from gui.widgets.conversation_view import ConversationView
 from gui.widgets.editing_area import EditingArea
 from gui.workers import FnWorker
-from audio.io import EXPORT_FORMATS, export_file_filter, probe, save
-from audio.render import (
-    RenderCache,
-    estimate_mix_duration_ms,
-    estimate_track_duration_ms,
-    render_mix,
-    render_track,
-)
-from app_context import (
-    APP_NAME,
-    AppContext,
-    DEFAULT_TRANSLATION_MODEL,
-    build_app_context,
-    resolve_composition_model,
-)
-from workspaces.ingest import generation_history, persist_generation
-from workspaces.models import Mix, MixClip, OriginalMedia, ProjectSettings, Track, TrackSource
-from workspaces.project import Project
-from workspaces.transcript import decode_text, dump_lrc, parse_imported_lrc
 from llm.base import GenerationRequest
 from llm.lyria3 import Lyria3Provider
 from llm.translate import translate_lrc
+from workspaces.ingest import generation_history, persist_generation
+from workspaces.models import Mix, MixClip, OriginalMedia, ProjectSettings, Track, \
+    TrackSource
+from workspaces.project import Project
+from workspaces.transcript import decode_text, dump_lrc, parse_imported_lrc
 
-NO_PROJECT_WARNING = (
-    "No project is open. Use File → New Project or File → Open Project before generating."
-)
-NO_API_KEY_WARNING = (
-    "No Gemini API key is set. Add a Google AI Studio API key in Edit → Preferences, "
-    "or set the GEMINI_API_KEY environment variable."
-)
+NO_PROJECT_WARNING = ("No project is open. Use File → New Project or File → Open Project "
+                      "before generating.")
+NO_API_KEY_WARNING = ("No Gemini API key is set. Add a Google AI Studio API key in Edit "
+                      "→ Preferences, or set the GEMINI_API_KEY environment variable.")
 GAIN_MIN_DB = -60.0
 GAIN_MAX_DB = 24.0
 
@@ -1123,6 +1121,7 @@ class MainWindow(QMainWindow):
         self._sync_actions()
 
     def _play_mixed(self) -> None:
+        self._select_track("")
         self._set_play_target("", autoplay=True)
 
     def _save_track_as(self, track_id: str) -> None:
