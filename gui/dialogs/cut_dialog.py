@@ -1,7 +1,4 @@
 """Trim or remove a time range on the selected track."""
-
-
-
 from PyQt6.QtGui import QIntValidator
 from PyQt6.QtWidgets import (
     QDialog,
@@ -13,8 +10,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-import numpy as np
-
 
 class CutDialog(QDialog):
     def __init__(self, parent: QWidget | None = None, duration_ms: int = 0) -> None:
@@ -23,8 +18,8 @@ class CutDialog(QDialog):
         layout = QVBoxLayout(self)
         form = QFormLayout()
         self.start_edit = QLineEdit("0")
-        self.end_edit = QLineEdit(str(int(np.maximum(0, duration_ms))))
-        validator = QIntValidator(0, int(np.maximum(duration_ms, 1_000_000)), self)
+        self.end_edit = QLineEdit(str(max(0, duration_ms)))
+        validator = QIntValidator(0, max(duration_ms, 1_000_000), self)
         self.start_edit.setValidator(validator)
         self.end_edit.setValidator(validator)
         form.addRow("Start (ms):", self.start_edit)

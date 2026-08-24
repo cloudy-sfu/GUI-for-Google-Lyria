@@ -1,77 +1,54 @@
 """Non-destructive render: apply a track operation chain, then mix placements."""
-
-
-
-import hashlib
 import json
 from pathlib import Path
-from typing import Any
 
-import numpy as np
-
-from audio.channels import ChannelLayout, layout_by_name
+from audio.channels import layout_by_name
 from audio.clip import AudioClip
 from audio.io import load
-from audio.operations import Placement, mix as mix_clips
-from app_context import Registry
+from audio.operations import OPERATIONS, Placement, mix as mix_clips
 from workspaces.models import Mix, Track
 
 
 def _chain_key(track: Track) -> str:
-    payload = json.dumps(
-        {"id": track.id, "media": track.media_id, "ops": track.operations},
+    return json.dumps(
+        {"media": track.media_id, "ops": track.operations},
         sort_keys=True,
         separators=(",", ":"),
     )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 class RenderCache:
+    """Per-track cache of the rendered operation chain, keyed by that chain."""
+
     def __init__(self) -> None:
-        self._clips: dict[str, AudioClip] = {}
-        self._keys: dict[str, str] = {}
+        self._entries: dict[str, tuple[str, AudioClip]] = {}
 
     def invalidate(self, track_id: str | None = None) -> None:
         if track_id is None:
-            self._clips.clear()
-            self._keys.clear()
-            return
-        self._clips.pop(track_id, None)
-        self._keys.pop(track_id, None)
+            self._entries.clear()
+        else:
+            self._entries.pop(track_id, None)
 
     def get(self, track_id: str, key: str) -> AudioClip | None:
-        if self._keys.get(track_id) == key:
-            return self._clips.get(track_id)
-        return None
+        entry = self._entries.get(track_id)
+        return entry[1] if entry is not None and entry[0] == key else None
 
     def put(self, track_id: str, key: str, clip: AudioClip) -> None:
-        self._keys[track_id] = key
-        self._clips[track_id] = clip
+        self._entries[track_id] = (key, clip)
 
 
-def apply_operations(
-    clip: AudioClip,
-    operations: list[dict[str, Any]],
-    effects: Registry,
-) -> AudioClip:
+def apply_operations(clip: AudioClip, operations: list[dict]) -> AudioClip:
     for spec in operations:
-        op_name = spec.get("op")
-        if not op_name:
-            raise ValueError("Operation is missing 'op'.")
-        params = {key: value for key, value in spec.items() if key != "op"}
-        params.pop("rubberband_path", None)
-        try:
-            effect = effects.create(op_name)
-        except KeyError as exc:
-            raise ValueError(f"Unknown audio operation: {op_name}") from exc
-        clip = effect.apply(clip, params)
+        func = OPERATIONS.get(spec.get("op", ""))
+        if func is None:
+            raise ValueError(f"Unknown audio operation: {spec.get('op')}")
+        clip = func(clip, **{key: value for key, value in spec.items() if key != "op"})
     return clip
 
 
 def render_track(
     track: Track,
     project_root: Path,
-    effects: Registry,
     cache: RenderCache | None = None,
 ) -> AudioClip:
     key = _chain_key(track)
@@ -79,9 +56,7 @@ def render_track(
         cached = cache.get(track.id, key)
         if cached is not None:
             return cached
-    path = project_root / track.original.path
-    clip = load(path)
-    clip = apply_operations(clip, track.operations, effects)
+    clip = apply_operations(load(project_root / track.original.path), track.operations)
     if cache is not None:
         cache.put(track.id, key, clip)
     return clip
@@ -91,35 +66,24 @@ def render_mix(
     tracks: list[Track],
     mix: Mix,
     project_root: Path,
-    effects: Registry,
     samplerate: int,
     clip_protection: str = "headroom",
     cache: RenderCache | None = None,
 ) -> AudioClip:
     by_id = {track.id: track for track in tracks}
-    layout: ChannelLayout = layout_by_name(mix.channel_layout)
-    placements: list[Placement] = []
-    for mix_clip in mix.clips:
-        track = by_id.get(mix_clip.track_id)
-        if track is None:
-            continue
-        rendered = render_track(
-            track,
-            project_root,
-            effects,
-            cache=cache,
+    placements = [
+        Placement(
+            clip=render_track(by_id[mix_clip.track_id], project_root, cache=cache),
+            offset_ms=mix_clip.offset_ms,
+            gain_db=mix_clip.gain_db,
+            mute=mix_clip.mute,
         )
-        placements.append(
-            Placement(
-                clip=rendered,
-                offset_ms=mix_clip.offset_ms,
-                gain_db=mix_clip.gain_db,
-                mute=mix_clip.mute,
-            )
-        )
+        for mix_clip in mix.clips
+        if mix_clip.track_id in by_id
+    ]
     return mix_clips(
         placements,
-        layout=layout,
+        layout=layout_by_name(mix.channel_layout),
         samplerate=samplerate,
         clip_protection=clip_protection,
     )
@@ -132,24 +96,21 @@ def estimate_track_duration_ms(track: Track) -> int:
         if op == "cut":
             start = float(spec.get("start_ms", 0))
             end = float(spec.get("end_ms", duration))
-            mode = spec.get("mode", "keep")
-            if mode == "keep":
-                duration = np.maximum(0.0, end - start)
-            else:
-                duration = np.maximum(0.0, duration - (end - start))
+            span = end - start
+            duration = span if spec.get("mode", "keep") == "keep" else duration - span
+            duration = max(0.0, duration)
         elif op == "speed":
             ratio = float(spec.get("ratio", 1.0))
             if ratio > 0:
-                duration = duration / ratio
-    return int(np.round(duration))
+                duration /= ratio
+    return round(duration)
 
 
 def estimate_mix_duration_ms(tracks: list[Track], mix: Mix) -> int:
     """Latest clip end on the mix timeline, matching what the ruler shows."""
-    end = 1
-    for track in tracks:
-        mix_clip = mix.clip_for_track(track.id)
-        offset = mix_clip.offset_ms if mix_clip else 0
-        duration = int(np.maximum(1, estimate_track_duration_ms(track)))
-        end = int(np.maximum(end, offset + duration))
-    return int(np.maximum(end, 1))
+    offsets = {clip.track_id: clip.offset_ms for clip in mix.clips}
+    ends = [
+        offsets.get(track.id, 0) + max(1, estimate_track_duration_ms(track))
+        for track in tracks
+    ]
+    return max(ends, default=1)

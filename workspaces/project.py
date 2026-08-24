@@ -6,7 +6,6 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 from workspaces.models import (
     Conversation,
     ConversationLog,
@@ -16,6 +15,7 @@ from workspaces.models import (
     MixClip,
     ProjectSettings,
     Track,
+    TranscriptRef,
     resolve_model_id,
     utc_now,
 )
@@ -30,7 +30,7 @@ from workspaces.transcript import (
 SCHEMA_VERSION = 1
 
 
-def atomic_write_json(path: Path, data) -> None:
+def _atomic_write_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -74,10 +74,6 @@ class UndoStack:
             return None
         self._past.append((copy.deepcopy(tracks), copy.deepcopy(mix)))
         return self._future.pop()
-
-    def clear(self) -> None:
-        self._past.clear()
-        self._future.clear()
 
 
 @dataclass
@@ -149,16 +145,10 @@ class Project:
             return active
         return self.new_conversation()
 
-    @property
-    def conversation(self) -> Conversation:
-        return self.ensure_active_conversation()
-
-    def set_active_conversation(self, conversation_id: str) -> Conversation | None:
+    def set_active_conversation(self, conversation_id: str) -> None:
         found = self.conversation_by_id(conversation_id)
-        if found is None:
-            return None
-        self.conversation_log.active_id = found.id
-        return found
+        if found is not None:
+            self.conversation_log.active_id = found.id
 
     def new_conversation(
         self,
@@ -324,8 +314,6 @@ class Project:
         write_transcript_file(path, cues, title=track.name, language=language)
         existing = next((item for item in track.transcripts if item.language == language), None)
         if existing is None:
-            from workspaces.models import TranscriptRef
-
             track.transcripts.append(
                 TranscriptRef(language=language, path=relative, source=source)
             )
@@ -358,7 +346,7 @@ class Project:
     def save(self) -> None:
         self.ensure_dirs()
         self.modified_at = utc_now()
-        atomic_write_json(
+        _atomic_write_json(
             self.root / "project.json",
             {
                 "schema_version": SCHEMA_VERSION,
@@ -366,20 +354,19 @@ class Project:
                 "modified_at": self.modified_at,
                 "default_model": self.default_model,
                 "settings": self.settings.to_dict(),
-            }
+            },
         )
-        atomic_write_json(
+        _atomic_write_json(
             self.root / "conversation.json",
             {
                 "schema_version": self.conversation_log.schema_version,
                 "active_id": self.conversation_log.active_id,
                 "conversations": [
-                    item.to_dict()
-                    for item in self.conversation_log.conversations
+                    item.to_dict() for item in self.conversation_log.conversations
                 ],
-            }
+            },
         )
-        atomic_write_json(
+        _atomic_write_json(
             self.root / "tracks.json",
             {
                 "schema_version": SCHEMA_VERSION,
@@ -432,9 +419,7 @@ class Project:
             root=root,
             created_at=manifest.get("created_at") or utc_now(),
             modified_at=manifest.get("modified_at") or utc_now(),
-            default_model=resolve_model_id(
-                manifest.get("default_model") or manifest.get("default_provider")
-            )
+            default_model=resolve_model_id(manifest.get("default_model"))
             or DEFAULT_COMPOSITION_MODEL,
             settings=ProjectSettings.from_dict(manifest.get("settings")),
             conversation_log=ConversationLog.from_dict(conversation_data),

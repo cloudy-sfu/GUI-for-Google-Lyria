@@ -3,51 +3,20 @@ import json
 import re
 from typing import Any
 
-import numpy as np
 from google import genai
 
-from llm.base import (
-    Capabilities,
-    GeneratedAudio,
-    GenerationRequest,
-    GenerationResult,
-    MusicProvider,
-    TimedLyric,
-)
-from workspaces.transcript import cues_from_lyric_text
+from llm.base import GeneratedAudio, GenerationRequest, GenerationResult
+from workspaces.transcript import Cue, cues_from_lyric_text
 
 _JSON_BLOCK = re.compile(r"\{.*\}", re.DOTALL)
 _LYRIA_SAMPLERATE = 44100
 _LYRIA_CHANNELS = 2
 
 
-def _display_name_for_model(model_id: str) -> str:
-    lower = model_id.lower()
-    if "clip" in lower:
-        return "Lyria 3 Clip"
-    if "pro" in lower:
-        return "Lyria 3 Pro"
-    return "Lyria 3"
-
-
-class Lyria3Provider(MusicProvider):
+class Lyria3Provider:
     def __init__(self, settings, *, model_id: str) -> None:
         self.model_id = model_id
-        self.display_name = _display_name_for_model(model_id)
         self._settings = settings
-
-    def _supports_wav(self) -> bool:
-        return "pro" in self.model_id.lower()
-
-    def capabilities(self) -> Capabilities:
-        mimes = ("audio/wav", "audio/mpeg") if self._supports_wav() else ("audio/mpeg",)
-        return Capabilities(
-            accepts_text=True,
-            accepts_images=True,
-            returns_text=True,
-            returns_lyrics=True,
-            output_mimes=mimes,
-        )
 
     def generate(self, request: GenerationRequest) -> GenerationResult:
         api_key = self._settings.resolved_gemini_api_key()
@@ -55,16 +24,13 @@ class Lyria3Provider(MusicProvider):
             raise RuntimeError(
                 "Lyria 3 needs a Gemini API key. Set GEMINI_API_KEY or add it in Preferences."
             )
-        payload = _interaction_input(request)
         create_kwargs: dict[str, Any] = {
             "model": self.model_id,
-            "input": payload,
+            "input": _interaction_input(request),
         }
-        fmt = str(request.extra.get("response_format", "wav")).lower()
-        want_mp3 = fmt in {"mp3", "audio/mpeg", "audio/mp3"}
         # Lyria 3 Pro: response_format={"type": "audio"} selects WAV.
-        # Clip stays on the default MP3 output.
-        if self._supports_wav() and not want_mp3:
+        # Clip has no WAV output and stays on the default MP3.
+        if "pro" in self.model_id.lower():
             create_kwargs["response_format"] = {"type": "audio"}
 
         client = genai.Client(api_key=api_key)
@@ -80,13 +46,7 @@ class Lyria3Provider(MusicProvider):
         if not audios:
             raise RuntimeError("Lyria 3 returned no audio.")
         joined = "\n".join(texts).strip() or None
-        lyrics = _lyrics_from_text(joined)
-        raw: dict[str, Any] | None
-        try:
-            raw = interaction.model_dump() if hasattr(interaction, "model_dump") else None
-        except Exception:
-            raw = None
-        return GenerationResult(audios=audios, text=joined, lyrics=lyrics, raw=raw)
+        return GenerationResult(audios=audios, text=joined, lyrics=_lyrics_from_text(joined))
 
 
 def _interaction_input(request: GenerationRequest) -> str | list[dict[str, Any]]:
@@ -262,19 +222,13 @@ def _audio_mime(payload: bytes, reported: Any) -> str:
     return "audio/mpeg"
 
 
-def _lyrics_from_text(text: str | None) -> list[TimedLyric]:
+def _lyrics_from_text(text: str | None) -> list[Cue]:
     if not text:
         return []
-    parsed = _try_json_lyrics(text)
-    if parsed:
-        return parsed
-    cues = cues_from_lyric_text(text)
-    return [
-        TimedLyric(start_ms=cue.start_ms, end_ms=cue.end_ms, text=cue.text) for cue in cues
-    ]
+    return _try_json_lyrics(text) or cues_from_lyric_text(text)
 
 
-def _try_json_lyrics(text: str) -> list[TimedLyric]:
+def _try_json_lyrics(text: str) -> list[Cue]:
     match = _JSON_BLOCK.search(text)
     if not match:
         return []
@@ -292,35 +246,27 @@ def _try_json_lyrics(text: str) -> list[TimedLyric]:
         items = data
     if not items:
         return []
-    lyrics: list[TimedLyric] = []
+    lyrics: list[Cue] = []
     for item in items:
         if not isinstance(item, dict):
             continue
         text_value = item.get("text") or item.get("lyric") or item.get("content")
-        if not text_value:
-            continue
         start = item.get("start_ms", item.get("startMs", item.get("start")))
         end = item.get("end_ms", item.get("endMs", item.get("end")))
-        if start is None or end is None:
+        if not text_value or start is None or end is None:
             continue
-        lyrics.append(
-            TimedLyric(
-                start_ms=_to_ms(start),
-                end_ms=_to_ms(end),
-                text=str(text_value),
-            )
-        )
+        lyrics.append(Cue(start_ms=_to_ms(start), end_ms=_to_ms(end), text=str(text_value)))
     return lyrics
 
 
 def _to_ms(value) -> int:
+    """Accept `mm:ss`, `hh:mm:ss`, seconds, or milliseconds."""
     if isinstance(value, str) and ":" in value:
-        parts = value.split(":")
-        parts = [p.replace(",", ".") for p in parts]
-        if len(parts) == 3:
-            h, m, s = parts
-            return int(np.floor((float(h) * 3600 + float(m) * 60 + float(s)) * 1000))
-        if len(parts) == 2:
-            m, s = parts
-            return int(np.floor((float(m) * 60 + float(s)) * 1000))
-    return int(np.floor(float(value) * (1000 if float(value) < 1000 else 1)))
+        parts = [part.replace(",", ".") for part in value.split(":")]
+        if len(parts) in (2, 3):
+            seconds = 0.0
+            for part in parts:
+                seconds = seconds * 60 + float(part)
+            return int(seconds * 1000)
+    number = float(value)
+    return int(number * 1000 if number < 1000 else number)

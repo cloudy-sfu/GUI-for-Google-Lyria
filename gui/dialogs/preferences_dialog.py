@@ -1,7 +1,4 @@
 """App-level settings: credentials, composition model, export format."""
-
-
-
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,

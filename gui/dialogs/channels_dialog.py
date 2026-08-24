@@ -1,7 +1,4 @@
 """Named channel-layout conversion and stereo pan."""
-
-
-
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -13,8 +10,6 @@ from PyQt6.QtWidgets import (
     QWidget,
     QLabel,
 )
-
-import numpy as np
 
 from audio.channels import LAYOUTS
 
@@ -33,8 +28,8 @@ class ChannelsDialog(QDialog):
                 "5.1": "Make 5.1",
             }.get(name, name)
             self.layout_combo.addItem(label, name)
-        index = int(np.maximum(0, list(LAYOUTS).index(current) if current in LAYOUTS else 1))
-        self.layout_combo.setCurrentIndex(index)
+        names = list(LAYOUTS)
+        self.layout_combo.setCurrentIndex(names.index(current) if current in LAYOUTS else 1)
         self.pan = QSlider(Qt.Orientation.Horizontal)
         self.pan.setRange(-100, 100)
         self.pan.setValue(0)
@@ -55,7 +50,7 @@ class ChannelsDialog(QDialog):
         if value == 0:
             self.pan_label.setText("Center")
         elif value < 0:
-            self.pan_label.setText(f"Left {np.abs(value)}%")
+            self.pan_label.setText(f"Left {abs(value)}%")
         else:
             self.pan_label.setText(f"Right {value}%")
 

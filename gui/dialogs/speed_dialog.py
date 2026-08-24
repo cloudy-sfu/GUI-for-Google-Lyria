@@ -1,7 +1,4 @@
 """Pitch-preserving speed change, 0.01x to 10.00x."""
-
-
-
 from PyQt6.QtGui import QDoubleValidator
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -12,8 +9,6 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
-import numpy as np
 
 
 class SpeedDialog(QDialog):
@@ -39,5 +34,4 @@ class SpeedDialog(QDialog):
         layout.addWidget(buttons)
 
     def values(self) -> tuple[float, bool]:
-        ratio = np.round(float(self.ratio.text() or 1.0), 2)
-        return ratio, self.preserve.isChecked()
+        return round(float(self.ratio.text() or 1.0), 2), self.preserve.isChecked()

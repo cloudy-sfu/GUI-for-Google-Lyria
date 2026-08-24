@@ -44,21 +44,11 @@ def title_from_prompt(text: str, fallback: str = DEFAULT_CONVERSATION_TITLE) -> 
 class GenerationParams:
     model: str
     negative_prompt: str | None = None
-    seed: int | None = None
-    sample_count: int = 1
-    extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        data: dict[str, Any] = {
-            "model": self.model,
-            "sample_count": self.sample_count,
-        }
+        data: dict[str, Any] = {"model": self.model}
         if self.negative_prompt:
             data["negative_prompt"] = self.negative_prompt
-        if self.seed is not None:
-            data["seed"] = self.seed
-        if self.extra:
-            data["extra"] = dict(self.extra)
         return data
 
     @classmethod
@@ -66,11 +56,8 @@ class GenerationParams:
         if not data:
             return None
         return cls(
-            model=resolve_model_id(data.get("model") or data.get("provider")),
+            model=resolve_model_id(data.get("model")),
             negative_prompt=data.get("negative_prompt"),
-            seed=data.get("seed"),
-            sample_count=int(data.get("sample_count", 1)),
-            extra=dict(data.get("extra") or {}),
         )
 
 
@@ -253,10 +240,9 @@ class TrackSource:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TrackSource:
-        model = resolve_model_id(data.get("model") or data.get("provider"))
         return cls(
             type=data.get("type", "imported"),
-            model=model or None,
+            model=resolve_model_id(data.get("model")) or None,
             message_id=data.get("message_id"),
         )
 

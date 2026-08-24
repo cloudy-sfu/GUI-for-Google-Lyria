@@ -1,17 +1,15 @@
 """Audio file I/O: soundfile for WAV/FLAC/OGG, PyAV (bundled FFmpeg libraries) for MP3/AAC/M4A."""
-
-
-
 import io
 from pathlib import Path
 
+import av
 import numpy as np
 import soundfile as sf
 
 from audio.channels import layout_for_channel_count
 from audio.clip import AudioClip
 
-SOUNDFILE_SUFFIXES = {".wav", ".flac", ".ogg", ".oga"}
+_SOUNDFILE_SUFFIXES = {".wav", ".flac", ".ogg", ".oga"}
 EXPORT_FORMATS = ("wav", "flac", "m4a", "aac", "mp3")
 _EXPORT_FILTER_LABELS = {
     "wav": "WAV",
@@ -33,29 +31,23 @@ def export_file_filter() -> str:
     )
 
 
-def _import_av():
-    try:
-        import av
-    except ImportError as exc:
-        raise ImportError(
-            "The av package (PyAV) is required to read or write MP3, AAC, and M4A. "
-            "It bundles FFmpeg libraries."
-        ) from exc
-    return av
-
-
 def load(path: str | Path) -> AudioClip:
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"Audio file not found: {path}")
-    suffix = path.suffix.lower()
-    if suffix in SOUNDFILE_SUFFIXES:
-        return _load_soundfile(path)
-    return _load_av(path)
+    if path.suffix.lower() in _SOUNDFILE_SUFFIXES:
+        return _load_soundfile(str(path))
+    return _load_av(str(path))
 
 
-def _load_soundfile(path: Path) -> AudioClip:
-    samples, samplerate = sf.read(str(path), dtype="float32", always_2d=True)
+def load_bytes(data: bytes, mime: str | None = None) -> AudioClip:
+    if (mime or "").lower() in {"audio/wav", "audio/x-wav", "audio/wave"} or data[:4] == b"RIFF":
+        return _load_soundfile(io.BytesIO(data))
+    return _load_av(io.BytesIO(data))
+
+
+def _load_soundfile(source: str | io.BytesIO) -> AudioClip:
+    samples, samplerate = sf.read(source, dtype="float32", always_2d=True)
     return AudioClip(
         samples=samples,
         samplerate=int(samplerate),
@@ -63,23 +55,9 @@ def _load_soundfile(path: Path) -> AudioClip:
     )
 
 
-def load_bytes(data: bytes, mime: str | None = None) -> AudioClip:
-    mime = (mime or "").lower()
-    if mime in {"audio/wav", "audio/x-wav", "audio/wave"} or data[:4] == b"RIFF":
-        samples, samplerate = sf.read(io.BytesIO(data), dtype="float32", always_2d=True)
-        return AudioClip(
-            samples=samples,
-            samplerate=int(samplerate),
-            layout=layout_for_channel_count(samples.shape[1]),
-        )
-    return _load_av(io.BytesIO(data))
-
-
-def _load_av(source: Path | io.BytesIO) -> AudioClip:
-    av = _import_av()
-    opened = str(source) if isinstance(source, Path) else source
+def _load_av(source: str | io.BytesIO) -> AudioClip:
     try:
-        container = av.open(opened)
+        container = av.open(source)
     except Exception as exc:
         raise RuntimeError(f"Could not decode audio: {exc}") from exc
     try:
@@ -137,17 +115,11 @@ def save(clip: AudioClip, path: str | Path, fmt: str | None = None, mp3_quality:
 
 
 def _save_av(clip: AudioClip, path: Path, fmt: str, mp3_quality: str) -> None:
-    av = _import_av()
     container_format, codec = _AV_EXPORT[fmt]
-    channels = clip.channels
-    layout = "stereo" if channels >= 2 else "mono"
-    pcm = np.clip(clip.samples, -1.0, 1.0).astype(np.float32)
-    if channels >= 2:
-        pcm = pcm[:, :2]
-        channels = 2
-    else:
-        pcm = pcm[:, :1]
-    label = _EXPORT_FILTER_LABELS.get(fmt, fmt.upper())
+    channels = 2 if clip.channels >= 2 else 1
+    layout = "stereo" if channels == 2 else "mono"
+    pcm = np.clip(clip.samples[:, :channels], -1.0, 1.0).astype(np.float32)
+    label = _EXPORT_FILTER_LABELS[fmt]
     try:
         output = av.open(str(path), mode="w", format=container_format)
     except Exception as exc:
@@ -157,9 +129,8 @@ def _save_av(clip: AudioClip, path: Path, fmt: str, mp3_quality: str) -> None:
         stream.layout = layout
         if fmt == "mp3":
             try:
-                quality = int(np.clip(np.floor(float(mp3_quality)), 0, 9))
-                stream.codec_context.qscale = quality
-            except Exception:
+                stream.codec_context.qscale = min(max(int(float(mp3_quality)), 0), 9)
+            except (TypeError, ValueError):
                 stream.bit_rate = 192_000
         else:
             stream.bit_rate = 192_000
@@ -167,8 +138,6 @@ def _save_av(clip: AudioClip, path: Path, fmt: str, mp3_quality: str) -> None:
         offset = 0
         while offset < pcm.shape[0]:
             chunk = pcm[offset : offset + frame_size]
-            if chunk.shape[0] == 0:
-                break
             if chunk.shape[0] < frame_size:
                 padded = np.zeros((frame_size, channels), dtype=np.float32)
                 padded[: chunk.shape[0]] = chunk
@@ -192,4 +161,4 @@ def _save_av(clip: AudioClip, path: Path, fmt: str, mp3_quality: str) -> None:
 
 def probe(path: str | Path) -> tuple[int, int, int]:
     clip = load(path)
-    return clip.samplerate, clip.channels, int(np.round(clip.duration_ms))
+    return clip.samplerate, clip.channels, round(clip.duration_ms)

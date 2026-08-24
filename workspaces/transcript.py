@@ -4,14 +4,9 @@ Lyria 3 returns a timed lyric dialect (`[16.0:]` plus `[[A0]]` section tags)
 that converts cleanly to LRC, so the app stores, imports, exports, and
 translates lyrics as LRC. Older `.vtt` files still load.
 """
-
-
-
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-
-import numpy as np
 
 _TS = re.compile(
     r"(?:(\d+):)?(\d{1,2}):(\d{2})[.](\d{1,3})\s*-->\s*(?:(\d+):)?(\d{1,2}):(\d{2})[.](\d{1,3})"
@@ -52,25 +47,21 @@ class Transcript:
     source: str
     cues: list[Cue] = field(default_factory=list)
 
-    def cue_at(self, position_ms: int) -> Cue | None:
-        for cue in self.cues:
-            if cue.start_ms <= position_ms < cue.end_ms:
-                return cue
-        return None
+
+def decode_text(data: bytes) -> str:
+    """Decode a lyric file, trying the encodings editors actually produce."""
+    for encoding in ("utf-8-sig", "utf-16", "utf-8"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
 
 
 def _hms_to_ms(hours: str | None, minutes: str, seconds: str, millis: str) -> int:
     h = int(hours or 0)
     whole_millis = millis.ljust(3, "0")[:3]
     return ((h * 60 + int(minutes)) * 60 + int(seconds)) * 1000 + int(whole_millis)
-
-
-def ms_to_vtt(ms: int) -> str:
-    ms = int(np.maximum(0, ms))
-    hours, rem = divmod(ms, 3_600_000)
-    minutes, rem = divmod(rem, 60_000)
-    seconds, millis = divmod(rem, 1000)
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{millis:03d}"
 
 
 def parse_vtt(text: str) -> list[Cue]:
@@ -96,24 +87,6 @@ def parse_vtt(text: str) -> list[Cue]:
     return cues
 
 
-def dump_vtt(cues: list[Cue]) -> str:
-    chunks = ["WEBVTT", ""]
-    for cue in cues:
-        chunks.append(f"{ms_to_vtt(cue.start_ms)} --> {ms_to_vtt(cue.end_ms)}")
-        chunks.append(cue.text.strip() or " ")
-        chunks.append("")
-    return "\n".join(chunks).rstrip() + "\n"
-
-
-def read_vtt(path: Path) -> list[Cue]:
-    return parse_vtt(path.read_text(encoding="utf-8"))
-
-
-def write_vtt(path: Path, cues: list[Cue]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(dump_vtt(cues), encoding="utf-8")
-
-
 def _frac_to_ms(frac: str | None) -> int:
     if not frac:
         return 0
@@ -134,10 +107,9 @@ def _lrc_tag_to_ms(match: re.Match[str]) -> int:
 
 def ms_to_lrc(ms: int) -> str:
     """Standard LRC timestamp `[mm:ss.xx]` using total minutes and centiseconds."""
-    ms = int(np.maximum(0, ms))
-    minutes, rem = divmod(ms, 60_000)
+    minutes, rem = divmod(max(0, int(ms)), 60_000)
     seconds, millis = divmod(rem, 1000)
-    cs = int(np.round(millis / 10.0))
+    cs = round(millis / 10.0)
     if cs >= 100:
         seconds += cs // 100
         cs %= 100
@@ -149,11 +121,11 @@ def ms_to_lrc(ms: int) -> str:
 def _assign_end_times(cues: list[Cue], duration_ms: int | None) -> None:
     for i, cue in enumerate(cues):
         if i + 1 < len(cues):
-            cue.end_ms = int(np.maximum(cues[i + 1].start_ms, cue.start_ms + 1))
+            cue.end_ms = max(cues[i + 1].start_ms, cue.start_ms + 1)
         elif duration_ms is not None and duration_ms > cue.start_ms:
             cue.end_ms = duration_ms
         else:
-            cue.end_ms = int(np.maximum(cue.end_ms, cue.start_ms + _DEFAULT_LINE_MS))
+            cue.end_ms = max(cue.end_ms, cue.start_ms + _DEFAULT_LINE_MS)
 
 
 def parse_lrc(text: str, duration_ms: int | None = None) -> list[Cue]:
@@ -175,8 +147,7 @@ def parse_lrc(text: str, duration_ms: int | None = None) -> list[Cue]:
             continue
         lyric = line[tags[-1].end() :].strip()
         for tag in tags:
-            start = _lrc_tag_to_ms(tag) + offset_ms
-            timed.append((int(np.maximum(0, start)), lyric))
+            timed.append((max(0, _lrc_tag_to_ms(tag) + offset_ms), lyric))
     if not timed:
         return []
     timed.sort(key=lambda item: item[0])
@@ -207,27 +178,9 @@ def dump_lrc(
     return "\n".join(lines).rstrip() + "\n"
 
 
-def write_lrc(path: Path, cues: list[Cue], **meta) -> None:
+def write_transcript_file(path: Path, cues: list[Cue], **meta) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(dump_lrc(cues, **meta), encoding="utf-8")
-
-
-def _looks_like_vtt(text: str) -> bool:
-    return text.lstrip("\ufeff").lstrip()[:16].upper().startswith("WEBVTT")
-
-
-def parse_transcript_text(text: str, duration_ms: int | None = None) -> list[Cue]:
-    """Load whatever timed format is on disk: LRC, WebVTT, or Lyria text."""
-    stripped = text.lstrip("\ufeff")
-    if _looks_like_vtt(stripped):
-        return parse_vtt(stripped)
-    lrc = parse_lrc(stripped, duration_ms)
-    if lrc:
-        return lrc
-    lyria = _parse_lyria_lyric_cues(stripped, duration_ms)
-    if lyria:
-        return lyria
-    return parse_vtt(stripped)
 
 
 def parse_imported_lrc(text: str, duration_ms: int | None = None) -> list[Cue]:
@@ -236,34 +189,22 @@ def parse_imported_lrc(text: str, duration_ms: int | None = None) -> list[Cue]:
 
 
 def read_transcript_file(path: Path, duration_ms: int | None = None) -> list[Cue]:
-    data = path.read_bytes()
-    text = None
-    for encoding in ("utf-8-sig", "utf-16", "utf-8"):
-        try:
-            text = data.decode(encoding)
-            break
-        except UnicodeDecodeError:
-            continue
-    if text is None:
-        text = data.decode("utf-8", errors="replace")
-    return parse_transcript_text(text, duration_ms)
-
-
-def write_transcript_file(path: Path, cues: list[Cue], **meta) -> None:
-    if path.suffix.lower() == ".vtt":
-        write_vtt(path, cues)
-        return
-    write_lrc(path, cues, **meta)
+    """Load whatever timed format is on disk: LRC, WebVTT, or Lyria text."""
+    text = decode_text(path.read_bytes()).lstrip("\ufeff")
+    if text.lstrip()[:16].upper().startswith("WEBVTT"):
+        return parse_vtt(text)
+    return (
+        parse_lrc(text, duration_ms)
+        or _parse_lyria_lyric_cues(text, duration_ms)
+        or parse_vtt(text)
+    )
 
 
 def cues_from_lyric_text(text: str, duration_ms: int | None = None) -> list[Cue]:
     """Best-effort conversion of Lyria 3 lyric/structure text into cues."""
-    lyria = _parse_lyria_lyric_cues(text, duration_ms)
-    if lyria:
-        return lyria
-    lrc = parse_lrc(text, duration_ms)
-    if lrc:
-        return lrc
+    parsed = _parse_lyria_lyric_cues(text, duration_ms) or parse_lrc(text, duration_ms)
+    if parsed:
+        return parsed
     cues: list[Cue] = []
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -278,7 +219,7 @@ def cues_from_lyric_text(text: str, duration_ms: int | None = None) -> list[Cue]
             if match.group(6):
                 end += int(match.group(6).ljust(3, "0")[:3])
             body = (match.group(7) or "").strip()
-            cues.append(Cue(start_ms=start, end_ms=int(np.maximum(end, start + 1)), text=body or line))
+            cues.append(Cue(start_ms=start, end_ms=max(end, start + 1), text=body or line))
             continue
         vtt_match = _TS.search(line)
         if vtt_match:
@@ -307,8 +248,7 @@ def expand_unparsed_lyria_cues(
     if not cues or not any(_LYRIA_TIME.search(cue.text) for cue in cues):
         return cues
     blob = "\n".join(cue.text for cue in cues)
-    parsed = _parse_lyria_lyric_cues(blob, duration_ms)
-    return parsed if parsed else cues
+    return _parse_lyria_lyric_cues(blob, duration_ms) or cues
 
 
 def _clean_lyric(text: str) -> str:
@@ -324,7 +264,7 @@ def _tokenize_lyria(text: str) -> list[tuple[str, str | int | None]]:
         if match.group(1) is not None:
             tokens.append(("section", match.group(0)))
         elif match.group(2) is not None:
-            tokens.append(("time", int(np.round(float(match.group(2)) * 1000))))
+            tokens.append(("time", round(float(match.group(2)) * 1000)))
         else:
             tokens.append(("cont", None))
         pos = match.end()
@@ -365,8 +305,8 @@ def _spread_times(starts: list[int | None], duration_ms: int | None) -> list[int
             next_t = duration_ms
         else:
             next_t = prev_t + _DEFAULT_LINE_MS * (nxt - prev)
-        span = int(np.maximum(1, next_t - prev_t))
-        steps = int(np.maximum(1, nxt - prev))
+        span = max(1, next_t - prev_t)
+        steps = max(1, nxt - prev)
         for j in range(prev + 1, nxt):
             out[j] = prev_t + span * (j - prev) // steps
         i = nxt
@@ -376,7 +316,7 @@ def _spread_times(starts: list[int | None], duration_ms: int | None) -> list[int
 def _extend_last_cue(cues: list[Cue], duration_ms: int | None) -> None:
     if not cues or duration_ms is None or duration_ms <= 0:
         return
-    cues[-1].end_ms = int(np.maximum(cues[-1].end_ms, duration_ms))
+    cues[-1].end_ms = max(cues[-1].end_ms, duration_ms)
 
 
 def _parse_lyria_lyric_cues(text: str, duration_ms: int | None) -> list[Cue]:
@@ -445,5 +385,5 @@ def _parse_lyria_lyric_cues(text: str, duration_ms: int | None) -> list[Cue]:
             end = duration_ms
         else:
             end = start + _DEFAULT_LINE_MS
-        cues.append(Cue(start_ms=start, end_ms=int(np.maximum(end, start + 1)), text=body or " "))
+        cues.append(Cue(start_ms=start, end_ms=max(end, start + 1), text=body or " "))
     return cues

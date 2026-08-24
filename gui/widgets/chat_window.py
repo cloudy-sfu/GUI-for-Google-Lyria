@@ -1,7 +1,4 @@
 """Separate Gemini-style window: multiple Lyria conversations, history, and prompt."""
-
-
-
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -51,18 +48,8 @@ class PromptSubmission:
     image_mimes: list[str] = field(default_factory=list)
     model: str = ""
     negative_prompt: str | None = None
-    seed: int | None = None
-    sample_count: int = 1
     conversation_id: str = ""
     regenerate: bool = False
-
-
-@dataclass
-class _UserDraft:
-    prompt: str
-    images: list[Path]
-    model: str
-    negative_prompt: str | None
 
 
 _IMAGE_MIMES = {
@@ -366,20 +353,13 @@ class PromptComposer(QWidget):
         self.model.setText(model)
         self.model.blockSignals(False)
 
-    def load_draft(
-        self,
-        *,
-        prompt: str,
-        images: list[Path],
-        model: str,
-        negative_prompt: str | None,
-    ) -> None:
-        self.prompt.setPlainText(prompt)
-        self.negative.setText(negative_prompt or "")
-        self._images = list(images)
+    def load_draft(self, draft: PromptSubmission) -> None:
+        self.prompt.setPlainText(draft.prompt)
+        self.negative.setText(draft.negative_prompt or "")
+        self._images = list(draft.images)
         self._rebuild_attachments()
-        if model.strip():
-            self.set_model(model.strip())
+        if draft.model.strip():
+            self.set_model(draft.model.strip())
 
 
 class ChatWindow(QMainWindow):
@@ -490,9 +470,6 @@ class ChatWindow(QMainWindow):
                 return True
         return super().eventFilter(watched, event)
 
-    def selected_model(self) -> str:
-        return self.composer.current_model()
-
     def flush_model(self) -> None:
         self._save_model_to_conversation()
 
@@ -556,14 +533,12 @@ class ChatWindow(QMainWindow):
                 widget.set_actions_enabled(enabled)
 
     def _active_conversation(self) -> Conversation | None:
+        """The selected conversation, without creating one when the log is empty."""
         project = self._ctx.current_project
         if project is None:
             return None
-        return project.conversation_by_id(project.conversation_log.active_id) or (
-            project.conversation_log.conversations[0]
-            if project.conversation_log.conversations
-            else None
-        )
+        log = project.conversation_log
+        return log.by_id(log.active_id) or next(iter(log.conversations), None)
 
     def _on_chat_selected(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         project = self._ctx.current_project
@@ -632,22 +607,19 @@ class ChatWindow(QMainWindow):
         self.generate_requested.emit(submission)
 
     def _composition_model(self) -> str:
-        return (
-            self._ctx.settings.composition_model
-            or DEFAULT_COMPOSITION_MODEL
-        )
+        return self._ctx.settings.composition_model or DEFAULT_COMPOSITION_MODEL
+
+    def _model_for(self, conversation: Conversation | None) -> str:
+        """Conversation model, else the newest model it generated with, else the default."""
+        if conversation is None:
+            return self._composition_model()
+        if conversation.model.strip():
+            return conversation.model.strip()
+        stored = conversation.resolved_model()
+        return resolve_composition_model(stored) if stored else self._composition_model()
 
     def _sync_model_from_conversation(self) -> None:
-        conversation = self._active_conversation()
-        fallback = self._composition_model()
-        if conversation is None:
-            self.composer.set_model(fallback)
-            return
-        if conversation.model.strip():
-            self.composer.set_model(conversation.model.strip())
-            return
-        stored = conversation.resolved_model()
-        self.composer.set_model(resolve_composition_model(stored) if stored else fallback)
+        self.composer.set_model(self._model_for(self._active_conversation()))
 
     def _save_model_to_conversation(self) -> None:
         project = self._ctx.current_project
@@ -760,16 +732,11 @@ class ChatWindow(QMainWindow):
         message = next((item for item in conversation.messages if item.id == message_id), None)
         if message is None or message.role != "user":
             return
-        draft = self._draft_from_user_message(conversation, message)
+        draft = self._submission_from_user_message(conversation, message)
         if not project.truncate_messages_from(conversation.id, message_id):
             return
         self._persist_chat_change()
-        self.composer.load_draft(
-            prompt=draft.prompt,
-            images=draft.images,
-            model=draft.model,
-            negative_prompt=draft.negative_prompt,
-        )
+        self.composer.load_draft(draft)
         self._save_model_to_conversation()
         self.composer.prompt.setFocus()
 
@@ -797,43 +764,19 @@ class ChatWindow(QMainWindow):
         submission.regenerate = True
         self.generate_requested.emit(submission)
 
-    def _draft_from_user_message(
-        self, conversation: Conversation, message: Message
-    ) -> _UserDraft:
-        generation = message.generation
-        model = ""
-        negative = None
-        if generation is not None:
-            model = (generation.model or "").strip()
-            negative = generation.negative_prompt
-        if not model:
-            stored = conversation.resolved_model()
-            model = resolve_composition_model(stored) if stored else self._composition_model()
-        return _UserDraft(
-            prompt=message.text().strip(),
-            images=_image_paths_for_message(self._ctx.current_project, message),
-            model=model,
-            negative_prompt=negative,
-        )
-
     def _submission_from_user_message(
         self, conversation: Conversation, message: Message
     ) -> PromptSubmission:
-        draft = self._draft_from_user_message(conversation, message)
-        mimes: list[str] = []
-        for part in message.parts:
-            if part.type != "image":
-                continue
-            mimes.append(part.mime or "image/png")
         generation = message.generation
+        model = (generation.model or "").strip() if generation else ""
         return PromptSubmission(
-            prompt=draft.prompt,
-            images=list(draft.images),
-            image_mimes=mimes,
-            model=draft.model,
-            negative_prompt=draft.negative_prompt,
-            seed=generation.seed if generation is not None else None,
-            sample_count=generation.sample_count if generation is not None else 1,
+            prompt=message.text().strip(),
+            images=_image_paths_for_message(self._ctx.current_project, message),
+            image_mimes=[
+                part.mime or "image/png" for part in message.parts if part.type == "image"
+            ],
+            model=model or self._model_for(conversation),
+            negative_prompt=generation.negative_prompt if generation else None,
             conversation_id=conversation.id,
         )
 

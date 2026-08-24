@@ -1,9 +1,9 @@
 import shutil
 import sys
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
-import numpy as np
 from PyQt6.QtCore import QEvent, QObject, Qt, QThreadPool, QTimer
 from PyQt6.QtGui import QAction, QCloseEvent, QShowEvent, QWheelEvent
 from PyQt6.QtWidgets import (
@@ -15,7 +15,6 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMenuBar,
     QSplitter,
-    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -28,9 +27,14 @@ from gui.dialogs.preferences_dialog import PreferencesDialog
 from gui.dialogs.shortcuts_dialog import ShortcutsDialog
 from gui.dialogs.speed_dialog import SpeedDialog
 from gui.dialogs.timeline_help_dialog import TimelineHelpDialog
-from gui.messages import ask_save_discard_cancel, ask_yes_no, icon_message, silent_message
-from gui.style import apply_stylesheet, format_clock_ms, parse_clock_ms
-from gui.style import size_main_window, wheel_time_delta_ms
+from gui.messages import ask_save_discard_cancel, ask_yes_no, silent_message
+from gui.style import (
+    apply_stylesheet,
+    format_clock_ms,
+    parse_clock_ms,
+    size_main_window,
+    wheel_time_delta_ms,
+)
 from gui.widgets.chat_window import ChatWindow, PromptSubmission
 from gui.widgets.conversation_view import ConversationView
 from gui.widgets.editing_area import EditingArea
@@ -43,12 +47,17 @@ from audio.render import (
     render_mix,
     render_track,
 )
-from app_context import APP_NAME, AppContext, DEFAULT_TRANSLATION_MODEL, build_app_context, resolve_composition_model
+from app_context import (
+    APP_NAME,
+    AppContext,
+    DEFAULT_TRANSLATION_MODEL,
+    build_app_context,
+    resolve_composition_model,
+)
 from workspaces.ingest import generation_history, persist_generation
-from workspaces.models import Mix, MixClip, OriginalMedia, ProjectSettings, Track, \
-    TrackSource
+from workspaces.models import Mix, MixClip, OriginalMedia, ProjectSettings, Track, TrackSource
 from workspaces.project import Project
-from workspaces.transcript import dump_lrc, parse_imported_lrc
+from workspaces.transcript import decode_text, dump_lrc, parse_imported_lrc
 from llm.base import GenerationRequest
 from llm.lyria3 import Lyria3Provider
 from llm.translate import translate_lrc
@@ -74,6 +83,24 @@ def _resolve_export_destination(path: str, selected_filter: str = "") -> tuple[P
         if f"*.{name}" in selected:
             return dest.with_suffix(f".{name}"), name
     return dest.with_suffix(".wav"), "wav"
+
+
+def _op_spec(name: str, values: tuple) -> dict:
+    """Turn a dialog's values tuple into a stored operation spec."""
+    if name == "cut":
+        start, end, mode = values
+        return {"op": "cut", "start_ms": start, "end_ms": end, "mode": mode}
+    if name in ("fade_in", "fade_out"):
+        duration, shape = values
+        return {"op": name, "duration_ms": duration, "shape": shape}
+    if name == "speed":
+        ratio, preserve = values
+        return {"op": "speed", "ratio": ratio, "preserve_pitch": preserve}
+    layout_name, pan = values
+    spec = {"op": "channels", "target_layout": layout_name}
+    if layout_name == "stereo":
+        spec["pan"] = pan
+    return spec
 
 
 def _uses_native_wheel(widget: QWidget) -> bool:
@@ -129,7 +156,7 @@ class MainWindow(QMainWindow):
         self.editing.timeline.track_selected.connect(self._on_track_selected)
         self.editing.timeline.track_activated.connect(self._set_play_target)
         self.editing.timeline.seek_requested.connect(self.editing.player.set_position)
-        self.editing.timeline.delete_requested.connect(self._delete_selected_tracks)
+        self.editing.timeline.delete_requested.connect(self._delete_selected_track)
 
         self._build_menus(root_layout)
         root_layout.addWidget(self.splitter)
@@ -223,12 +250,11 @@ class MainWindow(QMainWindow):
         menu.addMenu(help_menu)
         layout.setMenuBar(menu)
 
-        self._file_actions = {
-            "save": save,
-            "save_as": save_as,
-            "close": close_project,
-        }
-        self._edit_actions = [
+        # Everything that needs an open project to do anything useful.
+        self._project_actions = [
+            save,
+            save_as,
+            close_project,
             undo,
             redo,
             import_audio,
@@ -252,22 +278,20 @@ class MainWindow(QMainWindow):
             self._recent_menu.addAction(action)
 
     def _sync_actions(self) -> None:
-        has_project = self._ctx.current_project is not None
-        for action in self._file_actions.values():
-            action.setEnabled(has_project)
-        self._file_actions["save"].setEnabled(has_project)
-        for action in self._edit_actions:
+        """Refresh action enablement, the window title, and the timeline."""
+        project = self._ctx.current_project
+        has_project = project is not None
+        for action in self._project_actions:
             action.setEnabled(has_project)
         self.editing.player.set_mixed_enabled(has_project)
-        project = self._ctx.current_project
-        if project is not None:
+        if project is None:
+            self.setWindowTitle(APP_NAME)
+        else:
             self._undo_action.setEnabled(project.undo_stack.can_undo())
             self._redo_action.setEnabled(project.undo_stack.can_redo())
-        title = APP_NAME
-        if project is not None:
-            dirty = "*" if project.dirty else ""
-            title = f"{project.name}{dirty} — {APP_NAME}"
-        self.setWindowTitle(title)
+            self.setWindowTitle(
+                f"{project.name}{'*' if project.dirty else ''} — {APP_NAME}"
+            )
         self._reload_tracks()
 
     def _set_project(self, project: Project | None) -> None:
@@ -285,7 +309,7 @@ class MainWindow(QMainWindow):
             self._ctx.settings.save()
             self._rebuild_recent()
         self._sync_actions()
-        self.editing.player.set_source(None)
+        self.editing.player.set_clip(None)
         self.conversation.set_transcript(None, [])
         self.conversation.set_transcript_actions_enabled(
             can_import=False, can_export=False, can_translate=False
@@ -453,9 +477,8 @@ class MainWindow(QMainWindow):
         dest, fmt = _resolve_export_destination(path, selected)
 
         def work() -> Path:
-            clip = self._render_mix_clip()
             save(
-                clip,
+                self._render_mix_clip(project),
                 dest,
                 fmt=fmt,
                 mp3_quality=self._ctx.settings.export_mp3_quality,
@@ -525,26 +548,21 @@ class MainWindow(QMainWindow):
             if chat is not None:
                 chat.add_warning(NO_API_KEY_WARNING)
             return
-        model = resolve_composition_model(
-            submission.model.strip() or self._ctx.settings.composition_model
+        provider = Lyria3Provider(
+            self._ctx.settings,
+            model_id=resolve_composition_model(
+                submission.model.strip() or self._ctx.settings.composition_model
+            ),
         )
-        try:
-            provider = self._ctx.providers.create(model)
-        except KeyError:
-            provider = Lyria3Provider(self._ctx.settings, model_id=model)
         history = []
         conversation = project.conversation_by_id(submission.conversation_id)
         if submission.regenerate and conversation is not None:
             history = generation_history(project, conversation)
-        images = [] if history else [path.read_bytes() for path in submission.images]
-        image_mimes = [] if history else list(submission.image_mimes)
         request = GenerationRequest(
             prompt=submission.prompt,
-            images=images,
-            image_mimes=image_mimes,
+            images=[] if history else [path.read_bytes() for path in submission.images],
+            image_mimes=[] if history else list(submission.image_mimes),
             negative_prompt=submission.negative_prompt,
-            seed=submission.seed,
-            sample_count=submission.sample_count,
             history=history,
         )
         if chat is not None:
@@ -588,20 +606,19 @@ class MainWindow(QMainWindow):
 
         self._run(work, ok, err)
 
-    def _selected_tracks(self) -> list[Track]:
+    def _selected_track(self) -> Track | None:
+        """The single edit target, or None when nothing usable is selected."""
         project = self._ctx.current_project
         track_id = self._selected_track_id()
         if project is None or not track_id:
-            return []
-        track = project.track_by_id(track_id)
-        return [track] if track is not None else []
-
-    def _require_tracks(self, minimum: int = 1) -> list[Track] | None:
-        tracks = self._selected_tracks()
-        if len(tracks) < minimum:
-            silent_message(self, "info", "Selector", "Select one or more tracks first.")
             return None
-        return tracks
+        return project.track_by_id(track_id)
+
+    def _require_track(self) -> Track | None:
+        track = self._selected_track()
+        if track is None:
+            silent_message(self, "info", "Selector", "Select a track first.")
+        return track
 
     def _on_edit(self, name: str) -> None:
         project = self._ctx.current_project
@@ -610,7 +627,7 @@ class MainWindow(QMainWindow):
         simple = {
             "align": self._align_selected,
             "export_audio": self._export_selected_track,
-            "delete": self._delete_selected_tracks,
+            "delete": self._delete_selected_track,
             "rename": self._rename_selected,
             "start": self._edit_start,
             "gain": self._edit_gain,
@@ -621,90 +638,70 @@ class MainWindow(QMainWindow):
         if handler is not None:
             handler()
             return
-        tracks = self._require_tracks(1)
-        if tracks is None:
+        track = self._require_track()
+        if track is None:
             return
-        if name == "cut":
-            dialog = CutDialog(self, tracks[0].original.duration_ms)
-            if dialog.exec() != dialog.DialogCode.Accepted:
-                return
-            start, end, mode = dialog.values()
-            self._append_op({"op": "cut", "start_ms": start, "end_ms": end, "mode": mode})
-        elif name == "fade_in":
-            dialog = FadeDialog("Fade In", self)
-            if dialog.exec() != dialog.DialogCode.Accepted:
-                return
-            duration, shape = dialog.values()
-            self._append_op({"op": "fade_in", "duration_ms": duration, "shape": shape})
-        elif name == "fade_out":
-            dialog = FadeDialog("Fade Out", self)
-            if dialog.exec() != dialog.DialogCode.Accepted:
-                return
-            duration, shape = dialog.values()
-            self._append_op({"op": "fade_out", "duration_ms": duration, "shape": shape})
-        elif name == "speed":
-            dialog = SpeedDialog(self)
-            if dialog.exec() != dialog.DialogCode.Accepted:
-                return
-            ratio, preserve = dialog.values()
-            self._append_op({"op": "speed", "ratio": ratio, "preserve_pitch": preserve})
-        elif name == "reverse":
-            self._append_op({"op": "reverse"})
-        elif name == "clear_edits":
-            self._clear_edits(tracks)
-        elif name == "channels":
-            dialog = ChannelsDialog(project.settings.default_channel_layout, self)
-            if dialog.exec() != dialog.DialogCode.Accepted:
-                return
-            layout_name, pan = dialog.values()
-            spec = {"op": "channels", "target_layout": layout_name}
-            if layout_name == "stereo":
-                spec["pan"] = pan
-            self._append_op(spec)
+        if name == "reverse":
+            self._append_op(track, {"op": "reverse"})
+            return
+        if name == "clear_edits":
+            self._clear_edits(track)
+            return
+        dialog = self._op_dialog(name, project, track)
+        if dialog is None or dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        self._append_op(track, _op_spec(name, dialog.values()))
 
-    def _append_op(self, spec: dict) -> None:
+    def _op_dialog(self, name: str, project: Project, track: Track):
+        if name == "cut":
+            return CutDialog(self, track.original.duration_ms)
+        if name == "fade_in":
+            return FadeDialog("Fade In", self)
+        if name == "fade_out":
+            return FadeDialog("Fade Out", self)
+        if name == "speed":
+            return SpeedDialog(self)
+        if name == "channels":
+            return ChannelsDialog(project.settings.default_channel_layout, self)
+        return None
+
+    def _append_op(self, track: Track, spec: dict) -> None:
         project = self._ctx.current_project
-        tracks = self._require_tracks(1)
-        if project is None or tracks is None:
+        if project is None:
             return
         project.snapshot_edits()
-        for track in tracks:
-            track.operations.append(dict(spec))
-            self._cache.invalidate(track.id)
+        track.operations.append(spec)
+        self._cache.invalidate(track.id)
         project.mark_dirty()
         self._sync_actions()
         self._queue_render()
 
-    def _clear_edits(self, tracks: list[Track]) -> None:
+    def _clear_edits(self, track: Track) -> None:
         project = self._ctx.current_project
-        edited = [track for track in tracks if track.operations]
-        if project is None or not edited:
+        if project is None or not track.operations:
             return
         if not ask_yes_no(
             self,
             "Clear edits",
-            f"Discard the operation chain on {len(edited)} track(s)? "
-            "The original audio is untouched.",
+            "Discard the operation chain on this track? The original audio is untouched.",
         ):
             return
         project.snapshot_edits()
-        for track in edited:
-            track.operations.clear()
-            self._cache.invalidate(track.id)
+        track.operations.clear()
+        self._cache.invalidate(track.id)
         project.mark_dirty()
         self._sync_actions()
         self._queue_render()
 
     def _align_selected(self) -> None:
         project = self._ctx.current_project
-        tracks = self._require_tracks(1)
-        if project is None or tracks is None:
+        track = self._require_track()
+        if project is None or track is None:
             return
-        moving_ids = {track.id for track in tracks}
         references = [
-            self._align_track(project, track)
-            for track in project.tracks
-            if track.id not in moving_ids
+            self._align_track(project, item)
+            for item in project.tracks
+            if item.id != track.id
         ]
         if not references:
             silent_message(
@@ -715,8 +712,7 @@ class MainWindow(QMainWindow):
                 "track unselected as the reference.",
             )
             return
-        moving = [self._align_track(project, track) for track in tracks]
-        dialog = AlignDialog(moving, references, self)
+        dialog = AlignDialog([self._align_track(project, track)], references, self)
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         offsets = dialog.offsets()
@@ -743,42 +739,30 @@ class MainWindow(QMainWindow):
         )
 
     def _export_selected_track(self) -> None:
-        tracks = self._require_tracks(1)
-        if tracks is None:
-            return
-        self._save_track_as(tracks[0].id)
+        track = self._require_track()
+        if track is not None:
+            self._save_track_as(track.id)
 
-    def _delete_selected_tracks(self) -> None:
+    def _delete_selected_track(self) -> None:
         project = self._ctx.current_project
-        tracks = self._selected_tracks()
-        if project is None or not tracks:
+        track = self._selected_track()
+        if project is None or track is None:
             return
-        id_set = {track.id for track in tracks}
-        all_ids = [track.id for track in project.tracks]
-        first_index = next((i for i, tid in enumerate(all_ids) if tid in id_set), 0)
-        later = [tid for i, tid in enumerate(all_ids) if i > first_index and tid not in id_set]
-        earlier = [tid for i, tid in enumerate(all_ids) if i < first_index and tid not in id_set]
-        next_id = later[0] if later else (earlier[-1] if earlier else "")
+        ids = [item.id for item in project.tracks]
+        index = ids.index(track.id)
+        neighbours = ids[index + 1 :] + ids[:index][::-1]
         project.snapshot_edits()
-        for track_id in id_set:
-            project.remove_track(track_id)
-            self._cache.invalidate(track_id)
-        if self._play_track_id in id_set:
+        project.remove_track(track.id)
+        self._cache.invalidate(track.id)
+        if self._play_track_id == track.id:
             self._play_track_id = None
         self._sync_actions()
-        self._select_track(next_id)
+        self._select_track(neighbours[0] if neighbours else "")
         self._queue_render()
-
-    def _transcript_track(self) -> Track | None:
-        project = self._ctx.current_project
-        track_id = self._selected_track_id()
-        if project is None or not track_id:
-            return None
-        return project.track_by_id(track_id)
 
     def _import_transcript(self) -> None:
         project = self._ctx.current_project
-        track = self._transcript_track()
+        track = self._selected_track()
         if project is None or track is None:
             silent_message(self, "info", "Transcript", "Select a track first.")
             return
@@ -789,23 +773,12 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
-        source = Path(path)
         try:
-            data = source.read_bytes()
+            data = Path(path).read_bytes()
         except OSError as exc:
             silent_message(self, "warn", "Import", str(exc))
             return
-        text = None
-        for encoding in ("utf-8-sig", "utf-16", "utf-8"):
-            try:
-                text = data.decode(encoding)
-                break
-            except UnicodeDecodeError:
-                continue
-        if text is None:
-            text = data.decode("utf-8", errors="replace")
-        duration_ms = track.original.duration_ms if track.original else None
-        cues = parse_imported_lrc(text, duration_ms)
+        cues = parse_imported_lrc(decode_text(data), track.original.duration_ms)
         if not cues:
             silent_message(
                 self,
@@ -832,7 +805,7 @@ class MainWindow(QMainWindow):
 
     def _export_transcript(self) -> None:
         project = self._ctx.current_project
-        track = self._transcript_track()
+        track = self._selected_track()
         if project is None or track is None:
             silent_message(self, "info", "Transcript", "Select a track first.")
             return
@@ -864,7 +837,7 @@ class MainWindow(QMainWindow):
 
     def _translate_transcript(self) -> None:
         project = self._ctx.current_project
-        track = self._transcript_track()
+        track = self._selected_track()
         if project is None or track is None:
             silent_message(self, "info", "Transcript", "Select a track first.")
             return
@@ -928,14 +901,8 @@ class MainWindow(QMainWindow):
 
         self._run(work, ok_result, err)
 
-    def _on_mute(self, track_id: str, mute: bool) -> None:
-        self._update_clip(track_id, mute=mute)
-
     def _on_offset(self, track_id: str, offset_ms: int) -> None:
         self._update_clip(track_id, offset_ms=offset_ms)
-
-    def _on_gain(self, track_id: str, gain_db: float) -> None:
-        self._update_clip(track_id, gain_db=gain_db)
 
     def _update_clip(
         self,
@@ -953,7 +920,7 @@ class MainWindow(QMainWindow):
         current = (clip.offset_ms, clip.gain_db, clip.mute) if clip else (0, 0.0, False)
         wanted = (
             current[0] if offset_ms is None else int(offset_ms),
-            current[1] if gain_db is None else np.round(gain_db, 1),
+            current[1] if gain_db is None else round(gain_db, 1),
             current[2] if mute is None else bool(mute),
         )
         if clip is not None and wanted == current:
@@ -964,10 +931,7 @@ class MainWindow(QMainWindow):
             project.mix.clips.append(clip)
         clip.offset_ms, clip.gain_db, clip.mute = wanted
         project.mark_dirty()
-        selected = self._selected_track_id()
-        self.editing.timeline.reload(project.tracks, project.mix)
-        self.editing.timeline.set_selected(selected)
-        self.setWindowTitle(f"{project.name}{'*' if project.dirty else ''} — {APP_NAME}")
+        self._sync_actions()
         # Mute and gain only shape the mix. Offset also places a single-track
         # preview on the project timeline, so reload that playback too.
         if self._play_track_id is None or offset_ms is not None:
@@ -1007,10 +971,9 @@ class MainWindow(QMainWindow):
 
     def _rename_selected(self) -> None:
         project = self._ctx.current_project
-        tracks = self._require_tracks(1)
-        if project is None or tracks is None:
+        track = self._require_track()
+        if project is None or track is None:
             return
-        track = tracks[0]
         name, ok = QInputDialog.getText(self, "Rename track", "Name:", text=track.name)
         name = name.strip()
         if not ok or not name or name == track.name:
@@ -1022,16 +985,15 @@ class MainWindow(QMainWindow):
 
     def _edit_start(self) -> None:
         project = self._ctx.current_project
-        tracks = self._require_tracks(1)
-        if project is None or tracks is None:
+        track = self._require_track()
+        if project is None or track is None:
             return
-        clip = project.mix.clip_for_track(tracks[0].id)
-        current = int(clip.offset_ms) if clip else 0
+        clip = project.mix.clip_for_track(track.id)
         text, ok = QInputDialog.getText(
             self,
             "Start",
             "Start as MM:SS.mmm, or a plain millisecond count:",
-            text=format_clock_ms(current),
+            text=format_clock_ms(clip.offset_ms if clip else 0),
         )
         if not ok:
             return
@@ -1039,58 +1001,49 @@ class MainWindow(QMainWindow):
         if offset is None:
             silent_message(self, "warn", "Start", f"“{text.strip()}” is not a valid time.")
             return
-        self._on_offset(tracks[0].id, offset)
+        self._update_clip(track.id, offset_ms=offset)
 
     def _edit_gain(self) -> None:
         project = self._ctx.current_project
-        tracks = self._require_tracks(1)
-        if project is None or tracks is None:
+        track = self._require_track()
+        if project is None or track is None:
             return
-        clip = project.mix.clip_for_track(tracks[0].id)
-        current = float(clip.gain_db) if clip else 0.0
+        clip = project.mix.clip_for_track(track.id)
         gain, ok = QInputDialog.getDouble(
-            self, "Gain", "Gain (dB):", current, GAIN_MIN_DB, GAIN_MAX_DB, 1
+            self,
+            "Gain",
+            "Gain (dB):",
+            float(clip.gain_db) if clip else 0.0,
+            GAIN_MIN_DB,
+            GAIN_MAX_DB,
+            1,
         )
         if ok:
-            self._on_gain(tracks[0].id, gain)
+            self._update_clip(track.id, gain_db=gain)
 
     def _toggle_mute_selected(self) -> None:
         project = self._ctx.current_project
-        tracks = self._require_tracks(1)
-        if project is None or tracks is None:
+        track = self._require_track()
+        if project is None or track is None:
             return
-        clip = project.mix.clip_for_track(tracks[0].id)
-        self._on_mute(tracks[0].id, not (clip is not None and clip.mute))
+        clip = project.mix.clip_for_track(track.id)
+        self._update_clip(track.id, mute=not (clip is not None and clip.mute))
 
     def _duplicate_selected(self) -> None:
         project = self._ctx.current_project
-        tracks = self._require_tracks(1)
-        if project is None or tracks is None:
+        source = self._require_track()
+        if project is None or source is None:
             return
-        source = tracks[0]
-        index = next(
-            (i for i, item in enumerate(project.tracks) if item.id == source.id), None
-        )
-        if index is None:
-            return
+        index = project.tracks.index(source)
         clip = project.mix.clip_for_track(source.id)
         project.snapshot_edits()
         # The copy reuses the same media file; only the edit chain is cloned.
         copy = Track(
             id=f"trk-{uuid.uuid4().hex}",
             name=f"{source.name} copy",
-            source=TrackSource(
-                type=source.source.type,
-                model=source.source.model,
-                message_id=source.source.message_id,
-            ),
+            source=replace(source.source),
             media_id=source.media_id,
-            original=OriginalMedia(
-                path=source.original.path,
-                samplerate=source.original.samplerate,
-                channels=source.original.channels,
-                duration_ms=source.original.duration_ms,
-            ),
+            original=replace(source.original),
             operations=[dict(spec) for spec in source.operations],
         )
         project.add_track(copy, offset_ms=int(clip.offset_ms) if clip else 0)
@@ -1162,12 +1115,11 @@ class MainWindow(QMainWindow):
             return
         current = next((i for i, item in enumerate(project.tracks) if item.id == track_id), None)
         if current is None or current == index:
+            # The timeline previewed the drop; put its list back the way it was.
             self._reload_tracks()
             return
         project.snapshot_edits()
         project.move_track(track_id, index)
-        self._reload_tracks()
-        self.setWindowTitle(f"{project.name}{'*' if project.dirty else ''} — {APP_NAME}")
         self._sync_actions()
 
     def _play_mixed(self) -> None:
@@ -1191,12 +1143,7 @@ class MainWindow(QMainWindow):
         dest, fmt = _resolve_export_destination(path, selected)
 
         def work() -> Path:
-            clip = render_track(
-                track,
-                project.root,
-                self._ctx.effects,
-                cache=self._cache,
-            )
+            clip = render_track(track, project.root, cache=self._cache)
             save(
                 clip,
                 dest,
@@ -1207,14 +1154,11 @@ class MainWindow(QMainWindow):
 
         self._run(work, lambda saved: silent_message(self, "info", "Save", f"Wrote {saved}"))
 
-    def _render_mix_clip(self):
-        project = self._ctx.current_project
-        assert project is not None
+    def _render_mix_clip(self, project: Project):
         return render_mix(
             project.tracks,
             project.mix,
             project.root,
-            self._ctx.effects,
             samplerate=project.settings.samplerate,
             clip_protection=self._ctx.settings.clip_protection,
             cache=self._cache,
@@ -1223,42 +1167,22 @@ class MainWindow(QMainWindow):
     def _queue_render(self) -> None:
         project = self._ctx.current_project
         if project is None:
-            self.editing.player.set_source(None)
+            self.editing.player.set_clip(None)
             return
         track_id = self._play_track_id
         autoplay = self._autoplay_next
         self._autoplay_next = False
-        effects = self._ctx.effects
-        cache = self._cache
 
         def work():
             timeline_ms = estimate_mix_duration_ms(project.tracks, project.mix)
             if not track_id:
-                clip = render_mix(
-                    project.tracks,
-                    project.mix,
-                    project.root,
-                    effects,
-                    samplerate=project.settings.samplerate,
-                    clip_protection=self._ctx.settings.clip_protection,
-                    cache=cache,
-                )
-                label = project.mix.name
-                offset_ms = 0
-            else:
-                track = project.track_by_id(track_id)
-                if track is None:
-                    raise RuntimeError("Track no longer exists.")
-                clip = render_track(
-                    track,
-                    project.root,
-                    effects,
-                    cache=cache,
-                )
-                mix_clip = project.mix.clip_for_track(track.id)
-                offset_ms = mix_clip.offset_ms if mix_clip else 0
-                label = track.name
-            return clip, label, offset_ms, timeline_ms
+                return self._render_mix_clip(project), project.mix.name, 0, timeline_ms
+            track = project.track_by_id(track_id)
+            if track is None:
+                raise RuntimeError("Track no longer exists.")
+            clip = render_track(track, project.root, cache=self._cache)
+            mix_clip = project.mix.clip_for_track(track.id)
+            return clip, track.name, mix_clip.offset_ms if mix_clip else 0, timeline_ms
 
         def ok(result) -> None:
             clip, label, offset_ms, timeline_ms = result
@@ -1305,9 +1229,9 @@ class MainWindow(QMainWindow):
         self._apply_split_ratio()
 
     def _apply_split_ratio(self) -> None:
-        width = int(np.maximum(1, self.splitter.size().width()))
-        left = int(np.maximum(1, width // 3))
-        self.splitter.setSizes([left, int(np.maximum(1, width - left))])
+        width = max(1, self.splitter.size().width())
+        left = max(1, width // 3)
+        self.splitter.setSizes([left, max(1, width - left)])
 
     def _reset_layout(self) -> None:
         self._apply_split_ratio()
@@ -1356,12 +1280,11 @@ class MainWindow(QMainWindow):
     def _nudge_playhead(self, delta_ms: int) -> None:
         player = self.editing.player
         timeline = self.editing.timeline
-        duration = int(np.maximum(player.duration_ms(), timeline.duration_ms()))
-        if player.duration_ms() > 0:
-            current = player.position_ms()
-        else:
-            current = timeline.position_ms()
-        new_pos = int(np.clip(current + delta_ms, 0, duration))
+        duration = max(player.duration_ms(), timeline.duration_ms())
+        current = (
+            player.position_ms() if player.duration_ms() > 0 else timeline.position_ms()
+        )
+        new_pos = min(max(current + delta_ms, 0), duration)
         timeline.set_position(new_pos)
         player.set_position(new_pos)
 

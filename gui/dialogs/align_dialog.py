@@ -1,10 +1,6 @@
 """Place tracks on the mix timeline by anchoring them to another track."""
-
-
-
 from dataclasses import dataclass
 
-import numpy as np
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -48,7 +44,7 @@ def aligned_offset_ms(
     target = reference.anchor_ms(reference_anchor) + gap_ms
     if moving_anchor == END:
         target -= moving.duration_ms
-    return int(np.maximum(0, target))
+    return max(0, target)
 
 
 class AlignDialog(QDialog):

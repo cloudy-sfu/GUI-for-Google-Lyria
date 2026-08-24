@@ -1,7 +1,4 @@
 """Shortcuts table dialog, mirroring the JSON schema editor TableDialog pattern."""
-
-
-
 from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,

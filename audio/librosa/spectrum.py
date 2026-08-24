@@ -1,7 +1,4 @@
 """STFT, ISTFT, and phase vocoder. Attribution: see audio/librosa/LICENSE.md."""
-
-
-
 import numpy as np
 from scipy.fft import irfft, rfft
 from scipy.signal import get_window

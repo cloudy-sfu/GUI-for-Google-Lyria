@@ -3,8 +3,8 @@
 Transcript lives in the left column; seek is on the timeline.
 """
 
+import math
 import threading
-from pathlib import Path
 
 import numpy as np
 from scipy.signal.windows import hann
@@ -23,7 +23,6 @@ from PyQt6.QtWidgets import (
 
 from audio.channels import MONO, STEREO, convert_layout
 from audio.clip import AudioClip
-from audio.io import load
 from audio.operations import resample
 from gui.style import em_px, format_clock, icon_size, themed_standard_icon
 
@@ -173,12 +172,6 @@ class AudioPlayerWidget(QWidget):
     def set_mixed_enabled(self, enabled: bool) -> None:
         self.mixed_btn.setEnabled(enabled)
 
-    def set_source(self, path: Path | None, label: str = "") -> None:
-        if path is None:
-            self.set_clip(None)
-            return
-        self.set_clip(load(path), label or path.name)
-
     def set_clip(
         self,
         clip: AudioClip | None,
@@ -187,8 +180,8 @@ class AudioPlayerWidget(QWidget):
         offset_ms: int = 0,
         timeline_ms: int = 0,
     ) -> None:
-        offset_ms = int(np.maximum(0, offset_ms))
-        timeline_ms = int(np.maximum(0, timeline_ms))
+        offset_ms = max(0, offset_ms)
+        timeline_ms = max(0, timeline_ms)
         if clip is not None and clip is self._clip and self._duration_ms > 0:
             # The render cache hands back the same clip when nothing that feeds
             # it changed; reloading it would needlessly restart the sink.
@@ -223,7 +216,7 @@ class AudioPlayerWidget(QWidget):
         self._position_ms = 0
         self._set_position_display(0)
         if was_playing and self._duration_ms > 0:
-            self.set_position(int(np.minimum(resume_at, self._duration_ms)))
+            self.set_position(min(resume_at, self._duration_ms))
             self.play()
 
     def position_ms(self) -> int:
@@ -235,9 +228,9 @@ class AudioPlayerWidget(QWidget):
         return int(self._duration_ms)
 
     def set_position(self, position_ms: int) -> None:
-        pos = int(np.maximum(0, position_ms))
+        pos = max(0, position_ms)
         if self._duration_ms > 0:
-            pos = int(np.clip(position_ms, 0, self._duration_ms))
+            pos = min(pos, self._duration_ms)
         resume = self._playing
         if resume:
             self._stop_sink()
@@ -309,7 +302,7 @@ class AudioPlayerWidget(QWidget):
         if samples.size == 0:
             return False
         self._format = chosen
-        self._samplerate = int(np.maximum(1, chosen.sampleRate()))
+        self._samplerate = max(1, chosen.sampleRate())
         self._close_reader()
         self._reader = _RatePlaybackDevice(samples, chosen, self)
         self._reader.set_rate(self._playback_rate)
@@ -317,8 +310,8 @@ class AudioPlayerWidget(QWidget):
         return int(samples.shape[0]) > 0
 
     def _apply_placement(self, offset_ms: int, timeline_ms: int) -> None:
-        self._offset_ms = int(np.maximum(0, offset_ms))
-        self._timeline_ms = int(np.maximum(0, timeline_ms))
+        self._offset_ms = max(0, offset_ms)
+        self._timeline_ms = max(0, timeline_ms)
         self._sync_reader_placement()
         if self._duration_ms > 0 and self._position_ms > self._duration_ms:
             self.set_position(self._duration_ms)
@@ -362,7 +355,7 @@ class AudioPlayerWidget(QWidget):
     def _on_playback_rate(self, value: int) -> None:
         rate = _rate_from_slider(value)
         self.speed_label.setText(f"{rate:.2f}x")
-        if np.abs(rate - self._playback_rate) < 1e-9:
+        if rate == self._playback_rate:
             return
         if self._playing:
             self._sync_position_from_sink()
@@ -408,8 +401,8 @@ class AudioPlayerWidget(QWidget):
         if self._sink is None:
             return
         elapsed_ms = (int(self._sink.processedUSecs()) - self._rate_anchor_usecs) / 1000.0
-        pos = self._rate_anchor_source_ms + elapsed_ms * self._playback_rate
-        self._position_ms = int(np.clip(np.floor(pos), 0, self._duration_ms))
+        pos = int(self._rate_anchor_source_ms + elapsed_ms * self._playback_rate)
+        self._position_ms = min(max(pos, 0), self._duration_ms)
 
     def _set_position_display(self, position_ms: int) -> None:
         self.time_label.setText(
@@ -418,7 +411,7 @@ class AudioPlayerWidget(QWidget):
         self.position_changed.emit(int(position_ms))
 
     def _frame_from_ms(self, position_ms: int) -> float:
-        return np.maximum(0.0, position_ms * self._samplerate / 1000.0)
+        return max(0.0, position_ms * self._samplerate / 1000.0)
 
     def _close_reader(self) -> None:
         if self._reader is None:
@@ -462,39 +455,36 @@ class _RatePlaybackDevice(QIODevice):
         self._ola = np.zeros((_OLA_GRAIN, self._channels), dtype=np.float32)
         self._window = hann(_OLA_GRAIN, sym=False).astype(np.float32)[:, None]
         self._bytes_per_frame = self._channels * _bytes_per_sample(fmt.sampleFormat())
-        self._samplerate = int(np.maximum(1, fmt.sampleRate()))
+        self._samplerate = max(1, fmt.sampleRate())
         self._lock = threading.Lock()
         self.open(QIODevice.OpenModeFlag.ReadOnly)
 
     def set_placement_ms(self, offset_ms: int, timeline_ms: int) -> None:
         """Place the clip on a longer timeline; frames outside it are silence."""
-        offset_frames = int(np.round(np.maximum(0, offset_ms) / 1000.0 * self._samplerate))
-        timeline_frames = int(np.round(np.maximum(0, timeline_ms) / 1000.0 * self._samplerate))
+        offset_frames = round(max(0, offset_ms) / 1000.0 * self._samplerate)
+        timeline_frames = round(max(0, timeline_ms) / 1000.0 * self._samplerate)
         with self._lock:
-            self._offset_frames = int(np.maximum(0, offset_frames))
-            self._timeline_frames = int(
-                np.maximum(
-                    np.maximum(1, timeline_frames),
-                    self._offset_frames + self._nframes,
-                )
+            self._offset_frames = offset_frames
+            self._timeline_frames = max(
+                1, timeline_frames, self._offset_frames + self._nframes
             )
-            self._src_pos = float(np.minimum(self._src_pos, self._timeline_frames))
+            self._src_pos = float(min(self._src_pos, self._timeline_frames))
 
     def duration_ms(self) -> int:
         with self._lock:
-            return int(np.round(self._timeline_frames / self._samplerate * 1000.0))
+            return round(self._timeline_frames / self._samplerate * 1000.0)
 
     def isSequential(self) -> bool:
         return True
 
     def set_rate(self, rate: float) -> None:
-        clamped = np.clip(rate, _RATE_MIN, _RATE_MAX)
+        clamped = min(max(rate, _RATE_MIN), _RATE_MAX)
         with self._lock:
             self._rate = clamped
 
     def seek_source_frame(self, frame: float) -> None:
         with self._lock:
-            self._src_pos = float(np.clip(frame, 0.0, self._timeline_frames))
+            self._src_pos = float(min(max(frame, 0.0), self._timeline_frames))
             self._pending.clear()
             self._ola.fill(0.0)
 
@@ -504,28 +494,19 @@ class _RatePlaybackDevice(QIODevice):
 
     def bytesAvailable(self) -> int:
         with self._lock:
-            if self._src_pos >= self._timeline_frames:
-                remain = 0
-            else:
-                remain = int(
-                    np.floor(
-                        np.maximum(
-                            0.0,
-                            (self._timeline_frames - self._src_pos)
-                            / np.maximum(self._rate, 1e-9),
-                        )
-                    )
-                )
+            remain = max(
+                0, int((self._timeline_frames - self._src_pos) / max(self._rate, 1e-9))
+            )
             extra = len(self._pending)
         return remain * self._bytes_per_frame + extra + super().bytesAvailable()
 
     def readData(self, maxlen: int) -> bytes:
-        needed = int(np.maximum(0, maxlen))
+        needed = max(0, maxlen)
         if needed < self._bytes_per_frame:
             return b""
         needed -= needed % self._bytes_per_frame
-        cap = self._bytes_per_frame * int(np.maximum(_OLA_HOP, self._samplerate // 10))
-        needed = int(np.minimum(needed, cap))
+        cap = self._bytes_per_frame * max(_OLA_HOP, self._samplerate // 10)
+        needed = min(needed, cap)
         with self._lock:
             while len(self._pending) < needed and self._src_pos < self._timeline_frames:
                 chunk = self._next_pcm()
@@ -544,15 +525,15 @@ class _RatePlaybackDevice(QIODevice):
         return 0
 
     def _next_pcm(self) -> bytes:
-        if np.abs(self._rate - 1.0) < 1e-9:
-            start = int(np.floor(self._src_pos))
+        if self._rate == 1.0:
+            start = int(self._src_pos)
             if start >= self._timeline_frames:
                 return b""
-            end = int(np.minimum(self._timeline_frames, start + _OLA_HOP))
+            end = min(self._timeline_frames, start + _OLA_HOP)
             frames = self._gather(start, end)
             self._src_pos = float(end)
             return _pcm_bytes(frames, self._fmt)
-        start = int(np.round(self._src_pos))
+        start = round(self._src_pos)
         grain = self._gather(start, start + _OLA_GRAIN)
         if grain.shape[0] < _OLA_GRAIN:
             padded = np.zeros((_OLA_GRAIN, self._channels), dtype=np.float32)
@@ -570,16 +551,15 @@ class _RatePlaybackDevice(QIODevice):
 
     def _gather(self, start: int, end: int) -> np.ndarray:
         """Timeline frames [start, end), silent outside the placed clip."""
-        start = int(start)
-        end = int(np.maximum(start, end))
+        end = max(start, end)
         n = end - start
         out = np.zeros((n, self._channels), dtype=np.float32)
         if n == 0:
             return out
-        clip_start = int(self._offset_frames)
+        clip_start = self._offset_frames
         clip_end = clip_start + self._nframes
-        a = int(np.maximum(start, clip_start))
-        b = int(np.minimum(end, clip_end))
+        a = max(start, clip_start)
+        b = min(end, clip_end)
         if b > a:
             out[a - start : b - start] = self._samples[a - clip_start : b - clip_start]
         return out
@@ -594,15 +574,13 @@ class _RatePlaybackDevice(QIODevice):
 
 def _rate_from_slider(value: int) -> float:
     half = _RATE_SLIDER_MAX / 2.0
-    t = (value - half) / half
-    rate = _RATE_MAX ** t
-    return np.clip(np.round(rate, 2), _RATE_MIN, _RATE_MAX)
+    rate = round(_RATE_MAX ** ((value - half) / half), 2)
+    return min(max(rate, _RATE_MIN), _RATE_MAX)
 
 
 def _slider_from_rate(rate: float) -> int:
-    rate = np.clip(rate, _RATE_MIN, _RATE_MAX)
-    t = np.log(rate) / np.log(_RATE_MAX)
-    return int(np.round(_RATE_SLIDER_MAX / 2.0 * (1.0 + t)))
+    rate = min(max(rate, _RATE_MIN), _RATE_MAX)
+    return round(_RATE_SLIDER_MAX / 2.0 * (1.0 + math.log(rate, _RATE_MAX)))
 
 
 def _bytes_per_sample(sample_format: QAudioFormat.SampleFormat) -> int:
@@ -639,7 +617,7 @@ def _align_for_device(
         fmt = _choose_format(clip, device)
     else:
         fmt = QAudioFormat(fmt)
-    rate = int(np.maximum(1, fmt.sampleRate()))
+    rate = max(1, fmt.sampleRate())
     channels = 2 if fmt.channelCount() >= 2 else 1
     fmt.setSampleRate(rate)
     fmt.setChannelCount(channels)

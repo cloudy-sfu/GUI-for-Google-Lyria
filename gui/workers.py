@@ -1,9 +1,5 @@
 """Run synchronous core work off the Qt GUI thread."""
-
-
-
 from collections.abc import Callable
-
 
 from PyQt6.QtCore import QObject, QRunnable, pyqtSignal
 
@@ -14,17 +10,15 @@ class WorkerSignals(QObject):
 
 
 class FnWorker(QRunnable):
-    def __init__(self, fn: Callable[..., Any], *args, **kwargs) -> None:
+    def __init__(self, fn: Callable[[], object]) -> None:
         super().__init__()
-        self.fn = fn
-        self.args = args
-        self.kwargs = kwargs
+        self._fn = fn
         self.signals = WorkerSignals()
         self.setAutoDelete(True)
 
     def run(self) -> None:
         try:
-            result = self.fn(*self.args, **self.kwargs)
+            result = self._fn()
         except Exception as exc:
             self.signals.error.emit(str(exc))
         else:

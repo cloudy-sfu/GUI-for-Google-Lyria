@@ -1,7 +1,4 @@
 """Left column: session warnings, rolling transcript, and the chat launcher."""
-
-
-
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPalette
 from PyQt6.QtWidgets import (

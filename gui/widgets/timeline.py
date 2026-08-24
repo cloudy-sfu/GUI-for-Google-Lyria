@@ -5,12 +5,8 @@ so Ctrl+scroll can zoom. A span of zero means "fit the whole mix", which is the
 default and keeps the widget self-scaling as tracks are added. A scroll bar
 along the bottom pans that window once the span is narrower than the mix.
 """
-
-
-
 from dataclasses import dataclass
 
-import numpy as np
 from PyQt6.QtCore import QEvent, QPoint, QRect, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
@@ -140,7 +136,7 @@ class TimelineWidget(QWidget):
         return self._selected_id
 
     def set_position(self, position_ms: int) -> None:
-        self._position_ms = int(np.maximum(0, position_ms))
+        self._position_ms = max(0, position_ms)
         self._scroll_into_view(self._position_ms)
         self.update()
 
@@ -157,7 +153,7 @@ class TimelineWidget(QWidget):
             offset = mix_clip.offset_ms if mix_clip else 0
             gain = mix_clip.gain_db if mix_clip else 0.0
             mute = bool(mix_clip and mix_clip.mute)
-            duration = int(np.maximum(1, estimate_track_duration_ms(track)))
+            duration = max(1, estimate_track_duration_ms(track))
             clips.append(
                 _ClipVisual(
                     track_id=track.id,
@@ -171,11 +167,8 @@ class TimelineWidget(QWidget):
                     rect=QRect(),
                 )
             )
-        self._duration_ms = int(
-            np.maximum(
-                estimate_mix_duration_ms(self._tracks, self._mix),
-                np.maximum(self._position_ms, 1),
-            )
+        self._duration_ms = max(
+            estimate_mix_duration_ms(self._tracks, self._mix), self._position_ms, 1
         )
         self._clips = clips
         self._clamp_view()
@@ -193,20 +186,20 @@ class TimelineWidget(QWidget):
         self.update()
 
     def _lane_width(self) -> int:
-        return int(np.maximum(1, self.width() - self._gutter - 8))
+        return max(1, self.width() - self._gutter - 8)
 
     def _span_ms(self) -> int:
         if self._view_span_ms <= 0:
             return self._duration_ms
-        return int(np.maximum(_MIN_SPAN_MS, np.minimum(self._view_span_ms, self._duration_ms)))
+        return max(_MIN_SPAN_MS, min(self._view_span_ms, self._duration_ms))
 
     def _clamp_view(self) -> None:
-        slack = self._duration_ms - self._span_ms()
-        self._view_start_ms = int(np.clip(self._view_start_ms, 0, np.maximum(0, slack)))
+        slack = max(0, self._duration_ms - self._span_ms())
+        self._view_start_ms = min(max(self._view_start_ms, 0), slack)
 
     def _x_for_ms(self, ms: int) -> int:
         lane = self._lane_width()
-        return self._gutter + int(np.trunc((ms - self._view_start_ms) * lane / self._span_ms()))
+        return self._gutter + int((ms - self._view_start_ms) * lane / self._span_ms())
 
     def _layout_clips(self) -> None:
         # Clip rects are clamped to one lane width outside the view so extreme
@@ -216,21 +209,20 @@ class TimelineWidget(QWidget):
         right_bound = self._gutter + 2 * lane
         for clip in self._clips:
             x = self._x_for_ms(clip.offset_ms)
-            w = int(np.maximum(24, np.floor(clip.duration_ms * lane / self._span_ms())))
-            left = int(np.maximum(x, left_bound))
-            right = int(np.minimum(x + w, right_bound))
+            w = max(24, int(clip.duration_ms * lane / self._span_ms()))
+            left = max(x, left_bound)
+            right = min(x + w, right_bound)
             y = self._ruler + clip.row * self._row_h + 4
-            h = self._row_h - 8
-            clip.rect = QRect(left, y, int(np.maximum(0, right - left)), h)
+            clip.rect = QRect(left, y, max(0, right - left), self._row_h - 8)
         self._sync_scrollbar()
 
     def _sync_scrollbar(self) -> None:
         span = self._span_ms()
-        slack = int(np.maximum(0, self._duration_ms - span))
+        slack = max(0, self._duration_ms - span)
         self._syncing_scroll = True
         self._hscroll.setRange(0, slack)
         self._hscroll.setPageStep(span)
-        self._hscroll.setSingleStep(int(np.maximum(1, span // 20)))
+        self._hscroll.setSingleStep(max(1, span // 20))
         self._hscroll.setValue(self._view_start_ms)
         self._syncing_scroll = False
         self._hscroll.setEnabled(slack > 0)
@@ -245,7 +237,7 @@ class TimelineWidget(QWidget):
 
     def _content_height(self) -> int:
         """Height above the scroll bar; valid before the layout has run."""
-        return int(np.maximum(0, self.height() - self._hscroll.sizeHint().height()))
+        return max(0, self.height() - self._hscroll.sizeHint().height())
 
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
@@ -387,32 +379,25 @@ class TimelineWidget(QWidget):
             super().mouseMoveEvent(event)
             return
         delta = event.position().toPoint() - self._drag_origin
-        if not self._dragging and np.abs(delta.x()) < _DRAG_SLOP and np.abs(delta.y()) < _DRAG_SLOP:
+        if not self._dragging and abs(delta.x()) < _DRAG_SLOP and abs(delta.y()) < _DRAG_SLOP:
             return
         if not self._dragging:
-            self._drag_axis = "x" if np.abs(delta.x()) >= np.abs(delta.y()) else "y"
+            self._drag_axis = "x" if abs(delta.x()) >= abs(delta.y()) else "y"
             self._dragging = True
         if self._drag_axis == "x":
-            dx_ms = int(np.trunc(delta.x() * self._span_ms() / self._lane_width()))
-            self._drag.offset_ms = int(np.maximum(0, self._drag_offset0 + dx_ms))
-            self._duration_ms = int(
-                np.max(
-                    [
-                        self._duration_ms,
-                        self._drag.offset_ms + self._drag.duration_ms,
-                        1,
-                    ]
-                )
+            dx_ms = int(delta.x() * self._span_ms() / self._lane_width())
+            self._drag.offset_ms = max(0, self._drag_offset0 + dx_ms)
+            self._duration_ms = max(
+                self._duration_ms, self._drag.offset_ms + self._drag.duration_ms, 1
             )
             self._layout_clips()
         else:
-            rows = int(np.round(delta.y() / self._row_h))
-            self._move_to_row(self._drag, self._drag_row0 + rows)
+            self._move_to_row(self._drag, self._drag_row0 + round(delta.y() / self._row_h))
         self.update()
 
     def _move_to_row(self, clip: _ClipVisual, target_row: int) -> None:
         """Reorder the live track list so the drag previews its drop position."""
-        target = int(np.clip(target_row, 0, len(self._tracks) - 1))
+        target = min(max(target_row, 0), len(self._tracks) - 1)
         if target == clip.row:
             return
         track = next((item for item in self._tracks if item.id == clip.track_id), None)
@@ -457,7 +442,7 @@ class TimelineWidget(QWidget):
         if delta_ms == 0:
             event.ignore()
             return
-        new_pos = int(np.clip(self._position_ms + delta_ms, 0, self._duration_ms))
+        new_pos = min(max(self._position_ms + delta_ms, 0), self._duration_ms)
         if new_pos != self._position_ms:
             self._position_ms = new_pos
             self._scroll_into_view(new_pos)
@@ -469,13 +454,13 @@ class TimelineWidget(QWidget):
         """Scale the visible span, holding the time under the pointer in place."""
         span = self._span_ms()
         anchor_ms = self._ms_at_clamped(x)
-        fraction = np.clip((anchor_ms - self._view_start_ms) / span, 0.0, 1.0)
-        new_span = int(np.round(span / _ZOOM_PER_NOTCH**notches))
-        new_span = int(np.maximum(_MIN_SPAN_MS, np.minimum(new_span, self._duration_ms)))
+        fraction = min(max((anchor_ms - self._view_start_ms) / span, 0.0), 1.0)
+        new_span = round(span / _ZOOM_PER_NOTCH**notches)
+        new_span = max(_MIN_SPAN_MS, min(new_span, self._duration_ms))
         if new_span == span:
             return
         self._view_span_ms = 0 if new_span >= self._duration_ms else new_span
-        self._view_start_ms = int(np.round(anchor_ms - fraction * new_span))
+        self._view_start_ms = round(anchor_ms - fraction * new_span)
         self._clamp_view()
         self._layout_clips()
         self.update()
@@ -525,8 +510,8 @@ class TimelineWidget(QWidget):
         return self._ms_at_clamped(x)
 
     def _ms_at_clamped(self, x: int) -> int:
-        offset = np.maximum(0, x - self._gutter) * self._span_ms() / self._lane_width()
-        return int(np.clip(self._view_start_ms + np.floor(offset), 0, self._duration_ms))
+        offset = max(0, x - self._gutter) * self._span_ms() / self._lane_width()
+        return min(max(self._view_start_ms + int(offset), 0), self._duration_ms)
 
 
 def clip_label_lines(
@@ -576,8 +561,7 @@ def _draw_lines(painter: QPainter, rect: QRect, lines: list[str]) -> None:
 
 
 def _nice_tick(span_ms: int, width_px: int) -> int:
-    ms_per_px = span_ms / np.maximum(1, width_px)
-    target = 90 * ms_per_px
+    target = 90 * span_ms / max(1, width_px)
     for step in (1_000, 2_000, 5_000, 10_000, 15_000, 30_000, 60_000, 120_000, 300_000):
         if step >= target:
             return step

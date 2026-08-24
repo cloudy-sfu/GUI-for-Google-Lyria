@@ -1,7 +1,4 @@
 """In-memory audio clip: float32 samples shaped (frames, channels)."""
-
-
-
 from dataclasses import dataclass
 
 import numpy as np
@@ -40,6 +37,3 @@ class AudioClip:
         if self.samplerate <= 0:
             return 0.0
         return self.frames / self.samplerate * 1000.0
-
-    def copy(self) -> AudioClip:
-        return AudioClip(self.samples.copy(), self.samplerate, self.layout)

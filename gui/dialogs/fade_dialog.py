@@ -1,7 +1,4 @@
 """Fade in or fade out duration and curve."""
-
-
-
 from PyQt6.QtGui import QIntValidator
 from PyQt6.QtWidgets import (
     QComboBox,

@@ -1,7 +1,4 @@
 """Named channel layouts and conversion / pan / routing."""
-
-
-
 from dataclasses import dataclass
 
 import numpy as np
@@ -78,17 +75,13 @@ def convert_layout(
         out[:, 1] = samples[:, 0]
         return out
     if pair == ("stereo", "mono"):
-        left = samples[:, 0] if samples.shape[1] > 0 else 0
+        left = samples[:, 0]
         right = samples[:, 1] if samples.shape[1] > 1 else left
         out[:, 0] = 0.5 * (left + right)
         return out
-    if pair == ("stereo", "5.1") or (source.name == "stereo" and target.name == "5.1"):
-        if samples.shape[1] >= 2:
-            out[:, 0] = samples[:, 0]
-            out[:, 1] = samples[:, 1]
-        elif samples.shape[1] == 1:
-            out[:, 0] = samples[:, 0]
-            out[:, 1] = samples[:, 0]
+    if pair == ("stereo", "5.1"):
+        out[:, 0] = samples[:, 0]
+        out[:, 1] = samples[:, 1] if samples.shape[1] > 1 else samples[:, 0]
         return out
     if pair == ("mono", "5.1"):
         out[:, 2] = samples[:, 0]
@@ -117,22 +110,13 @@ def convert_layout(
     return out
 
 
-def equal_power_gains(pan: float) -> tuple[float, float]:
-    """pan in [-1, 1] -> (left_gain, right_gain) using equal-power pan law."""
-    pan = np.clip(pan, -1.0, 1.0)
-    angle = (pan + 1.0) * (np.pi / 4.0)
-    return np.cos(angle), np.sin(angle)
-
-
 def pan_stereo(samples: np.ndarray, pan: float) -> np.ndarray:
+    """Equal-power pan law; `pan` runs from -1 (left) to +1 (right)."""
     samples = _as_2d(samples).astype(np.float32, copy=True)
-    gain_l, gain_r = equal_power_gains(pan)
+    angle = (min(max(pan, -1.0), 1.0) + 1.0) * (np.pi / 4.0)
+    gain_l, gain_r = np.cos(angle), np.sin(angle)
     if samples.shape[1] == 1:
-        left = samples[:, 0] * gain_l
-        right = samples[:, 0] * gain_r
-        return np.stack([left, right], axis=1)
-    if samples.shape[1] >= 2:
-        samples[:, 0] *= gain_l
-        samples[:, 1] *= gain_r
-        return samples
+        return np.stack([samples[:, 0] * gain_l, samples[:, 0] * gain_r], axis=1)
+    samples[:, 0] *= gain_l
+    samples[:, 1] *= gain_r
     return samples
