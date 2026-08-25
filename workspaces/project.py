@@ -15,7 +15,6 @@ from workspaces.models import (
     ProjectSettings,
     Track,
     TranscriptRef,
-    resolve_model_id,
     utc_now,
 )
 from workspaces.transcript import (
@@ -418,7 +417,7 @@ class Project:
             root=root,
             created_at=manifest.get("created_at") or utc_now(),
             modified_at=manifest.get("modified_at") or utc_now(),
-            default_model=resolve_model_id(manifest.get("default_model")),
+            default_model=str(manifest.get("default_model") or "").strip(),
             settings=ProjectSettings.from_dict(manifest.get("settings")),
             conversation_log=ConversationLog.from_dict(conversation_data),
             tracks=[Track.from_dict(item) for item in tracks_data.get("tracks") or []],

@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
 from gui.messages import ask_yes_no
 from gui.style import format_clock, height_for_lines, size_chat_window
 from gui.widgets.conversation_view import WarningStrip
-from app_context import APP_NAME, AppContext, resolve_composition_model
+from app_context import APP_NAME, AppContext
 from workspaces.models import (
     DEFAULT_CONVERSATION_TITLE,
     Conversation,
@@ -592,7 +592,7 @@ class ChatWindow(QMainWindow):
         if conversation.model.strip():
             return conversation.model.strip()
         stored = conversation.resolved_model()
-        return resolve_composition_model(stored) if stored else self._composition_model()
+        return stored or self._composition_model()
 
     def _sync_model_from_conversation(self) -> None:
         self.composer.set_model(self._model_for(self._active_conversation()))
@@ -788,9 +788,7 @@ def _image_thumb(path: Path) -> QLabel:
 
 
 def _model_id_label(generation: GenerationParams) -> QLabel:
-    raw = (generation.model or "").strip()
-    text = resolve_composition_model(raw) if raw else ""
-    label = QLabel(text)
+    label = QLabel((generation.model or "").strip())
     label.setWordWrap(True)
     label.setMinimumWidth(0)
     return label

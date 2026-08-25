@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from app_context import APP_NAME, AppContext, build_app_context
+from app_context import APP_NAME, AppContext, Settings
 from audio.io import EXPORT_FORMATS, export_file_filter, probe, save
 from audio.render import (
     RenderCache,
@@ -1318,7 +1318,7 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     apply_stylesheet(app)
-    ctx = build_app_context()
+    ctx = AppContext(settings=Settings.load())
     window = MainWindow(ctx)
     window.show()
     sys.exit(app.exec())

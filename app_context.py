@@ -1,27 +1,21 @@
 """AppContext and Settings. Configuration is injected, never read from module globals."""
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from workspaces.models import resolve_model_id
 from workspaces.project import Project
 
 SCHEMA_VERSION = 1
 APP_NAME = "GUI for Google Lyria"
 
-
-def resolve_composition_model(value: str | None) -> str:
-    return resolve_model_id(value)
-
-
 def default_settings_path() -> Path:
-    if os.name == "nt":
-        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
-        return base / APP_NAME / "settings.json"
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".config"
-    return base / "gui-for-google-lyria" / "settings.json"
+    if getattr(sys, "frozen", False):
+        program_dir = Path(sys.executable).resolve().parent
+    else:
+        program_dir = Path(__file__).resolve().parent
+    return program_dir / "settings.json"
 
 
 @dataclass
@@ -56,7 +50,7 @@ class Settings:
         with path.open(encoding="utf-8") as handle:
             data = json.load(handle)
         return cls(
-            composition_model=resolve_composition_model(data.get("composition_model")),
+            composition_model=str(data.get("composition_model") or "").strip(),
             gemini_api_key=data.get("gemini_api_key"),
             samplerate=int(data.get("samplerate", 48000)),
             default_channel_layout=data.get("default_channel_layout", "stereo"),
@@ -99,9 +93,3 @@ class Settings:
 class AppContext:
     settings: Settings
     current_project: Project | None = None
-
-
-def build_app_context() -> AppContext:
-    settings = Settings.load()
-    settings.composition_model = resolve_composition_model(settings.composition_model)
-    return AppContext(settings=settings)

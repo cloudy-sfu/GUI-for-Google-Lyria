@@ -15,19 +15,6 @@ def utc_now() -> str:
 Role = Literal["user", "assistant"]
 DEFAULT_CONVERSATION_TITLE = "New conversation"
 CONVERSATION_LOG_VERSION = 2
-_MODEL_ALIASES = {
-    "lyria-3-pro": "lyria-3-pro-preview",
-    "lyria-3-clip": "lyria-3-clip-preview",
-    "lyria-2": "lyria-3-pro-preview",
-}
-
-
-def resolve_model_id(value: str | None) -> str:
-    """Map legacy short ids to Gemini model ids. Unknown values pass through."""
-    text = (value or "").strip()
-    if not text:
-        return ""
-    return _MODEL_ALIASES.get(text, text)
 
 
 def title_from_prompt(text: str, fallback: str = DEFAULT_CONVERSATION_TITLE) -> str:
@@ -55,7 +42,7 @@ class GenerationParams:
         if not data:
             return None
         return cls(
-            model=resolve_model_id(data.get("model")),
+            model=str(data.get("model") or "").strip(),
             negative_prompt=data.get("negative_prompt"),
         )
 
@@ -154,7 +141,7 @@ class Conversation:
             title=title,
             created_at=data.get("created_at") or utc_now(),
             modified_at=data.get("modified_at") or data.get("created_at") or utc_now(),
-            model=resolve_model_id(str(data.get("model") or "")),
+            model=str(data.get("model") or "").strip(),
             messages=messages,
         )
 
@@ -241,7 +228,7 @@ class TrackSource:
     def from_dict(cls, data: dict[str, Any]) -> TrackSource:
         return cls(
             type=data.get("type", "imported"),
-            model=resolve_model_id(data.get("model")) or None,
+            model=str(data.get("model") or "").strip() or None,
             message_id=data.get("message_id"),
         )
 
