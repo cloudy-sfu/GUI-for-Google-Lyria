@@ -243,7 +243,8 @@ class PromptComposer(QWidget):
         layout.addWidget(self.pending_attach)
 
         self.prompt = QTextEdit()
-        self.prompt.setPlaceholderText("Describe the music you want… (Ctrl+Enter to generate)")
+        self.prompt.setAcceptRichText(False)
+        self.prompt.setPlaceholderText("Describe the music you want... (Ctrl+Enter to generate)")
         self.prompt.setFixedHeight(height_for_lines(self.prompt, 4))
         self.prompt.installEventFilter(self)
         layout.addWidget(self.prompt)
