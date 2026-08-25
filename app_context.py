@@ -1,6 +1,5 @@
 """AppContext and Settings. Configuration is injected, never read from module globals."""
 import json
-import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,12 +29,6 @@ class Settings:
     translation_model: str = ""
     recent_projects: list[str] = field(default_factory=list)
     settings_path: Path | None = None
-
-    def resolved_gemini_api_key(self) -> str | None:
-        env = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        if env:
-            return env
-        return self.gemini_api_key or None
 
     def remember_project(self, folder: Path) -> None:
         path = str(folder.resolve())

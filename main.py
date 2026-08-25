@@ -60,7 +60,7 @@ from workspaces.transcript import decode_text, dump_lrc, parse_imported_lrc
 NO_PROJECT_WARNING = ("No project is open. Use File → New Project or File → Open Project "
                       "before generating.")
 NO_API_KEY_WARNING = ("No Gemini API key is set. Add a Google AI Studio API key in Edit "
-                      "→ Settings, or set the GEMINI_API_KEY environment variable.")
+                      "→ Settings.")
 
 
 def _resolve_export_destination(path: str, selected_filter: str = "") -> tuple[Path, str]:
@@ -315,7 +315,7 @@ class MainWindow(QMainWindow):
             self.conversation.add_warning(NO_PROJECT_WARNING)
             if self._chat_window is not None:
                 self._chat_window.add_warning(NO_PROJECT_WARNING)
-        if not self._ctx.settings.resolved_gemini_api_key():
+        if not self._ctx.settings.gemini_api_key:
             self.conversation.add_warning(NO_API_KEY_WARNING)
             if self._chat_window is not None:
                 self._chat_window.add_warning(NO_API_KEY_WARNING)
@@ -533,7 +533,7 @@ class MainWindow(QMainWindow):
             if chat is not None:
                 chat.add_warning(NO_PROJECT_WARNING)
             return
-        if not self._ctx.settings.resolved_gemini_api_key():
+        if not self._ctx.settings.gemini_api_key:
             self.conversation.add_warning(NO_API_KEY_WARNING)
             if chat is not None:
                 chat.add_warning(NO_API_KEY_WARNING)
@@ -833,7 +833,7 @@ class MainWindow(QMainWindow):
         if project is None or track is None:
             silent_message(self, "info", "Transcript", "Select a track first.")
             return
-        api_key = self._ctx.settings.resolved_gemini_api_key()
+        api_key = self._ctx.settings.gemini_api_key
         if not api_key:
             self.conversation.add_warning(NO_API_KEY_WARNING)
             silent_message(self, "warn", "Translate", NO_API_KEY_WARNING)
@@ -1208,7 +1208,7 @@ class MainWindow(QMainWindow):
             return
         dialog.apply_to(self._ctx.settings)
         self._ctx.settings.save()
-        api_key = self._ctx.settings.resolved_gemini_api_key()
+        api_key = self._ctx.settings.gemini_api_key
         model_id = self._ctx.settings.translation_model.strip()
         if not api_key:
             self.conversation.clear_warnings()
@@ -1218,6 +1218,7 @@ class MainWindow(QMainWindow):
             silent_message(self, "warn", "Settings", NO_API_KEY_WARNING)
             return
         if not model_id:
+
             silent_message(self, "warn", "Settings", "No translation model is set.")
             return
         try:

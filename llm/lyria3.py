@@ -19,10 +19,10 @@ class Lyria3Provider:
         self._settings = settings
 
     def generate(self, request: GenerationRequest) -> GenerationResult:
-        api_key = self._settings.resolved_gemini_api_key()
+        api_key = self._settings.gemini_api_key
         if not api_key:
             raise RuntimeError(
-                "Lyria 3 needs a Gemini API key. Set GEMINI_API_KEY or add it in Settings."
+                "Lyria 3 needs a Gemini API key. Add it in Edit → Settings."
             )
         create_kwargs: dict[str, Any] = {
             "model": self.model_id,
