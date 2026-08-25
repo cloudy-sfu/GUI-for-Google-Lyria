@@ -129,7 +129,7 @@ def _save_av(clip: AudioClip, path: Path, fmt: str, mp3_quality: str) -> None:
         stream.layout = layout
         if fmt == "mp3":
             try:
-                stream.codec_context.qscale = min(max(int(float(mp3_quality)), 0), 9)
+                stream.codec_context.qscale = np.clip(mp3_quality, 0, 9, dtype=int)
             except (TypeError, ValueError):
                 stream.bit_rate = 192_000
         else:
