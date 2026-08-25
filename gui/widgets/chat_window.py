@@ -368,7 +368,6 @@ class ChatWindow(QMainWindow):
         self._ctx = ctx
         self._busy = False
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        self.setWindowTitle(f"Chat with Lyria — {APP_NAME}")
         size_chat_window(self)
 
         root = QWidget()
@@ -497,8 +496,12 @@ class ChatWindow(QMainWindow):
             if self.chats.count():
                 self.chats.setCurrentRow(active_row)
         self.chats.blockSignals(False)
-        name = project.name if project is not None else "No project"
-        self.setWindowTitle(f"Chat with Lyria — {name}")
+        if project is None:
+            self.setWindowTitle(APP_NAME)
+        else:
+            self.setWindowTitle(
+                f"{project.name}{'*' if project.dirty else ''} — {APP_NAME}"
+            )
         self._reload_thread()
 
     def _set_history_actions_enabled(self, enabled: bool) -> None:
