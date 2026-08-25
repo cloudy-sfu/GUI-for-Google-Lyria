@@ -11,6 +11,8 @@ from PyQt6.QtWidgets import (
 
 from app_context import Settings
 from audio.io import EXPORT_FORMATS
+from gui.messages import silent_message
+from llm.translate import validate_api_key
 
 
 class PreferencesDialog(QDialog):
@@ -45,6 +47,25 @@ class PreferencesDialog(QDialog):
         layout.addWidget(buttons)
         hint = self.sizeHint()
         self.resize(int(hint.width() * 1.5), hint.height())
+
+    def accept(self) -> None:
+        api_key = self.api_key.text().strip()
+        model_id = self.translation_model.text().strip()
+        if not api_key:
+            silent_message(self, "warn", "Settings", "No Gemini API key is set.")
+            return
+        if not model_id:
+            silent_message(self, "warn", "Settings", "No translation model is set.")
+            return
+        self.setEnabled(False)
+        try:
+            validate_api_key(api_key=api_key, model_id=model_id)
+        except Exception as exc:
+            self.setEnabled(True)
+            silent_message(self, "warn", "Settings", str(exc))
+            return
+        self.setEnabled(True)
+        super().accept()
 
     def apply_to(self, settings: Settings) -> None:
         settings.gemini_api_key = self.api_key.text().strip() or None
