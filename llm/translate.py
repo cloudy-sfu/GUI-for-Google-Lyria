@@ -3,6 +3,17 @@
 from workspaces.transcript import Cue, dump_lrc, parse_lrc
 
 
+def validate_api_key(*, api_key: str, model_id: str) -> None:
+    """Raise if the Gemini API key cannot call the translation model."""
+    if not api_key.strip():
+        raise ValueError("No Gemini API key is set.")
+    _generate_text(
+        api_key=api_key,
+        model_id=model_id,
+        prompt="Reply with the single word OK.",
+    )
+
+
 def translate_lrc(
     cues: list[Cue],
     target_language: str,

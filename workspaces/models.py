@@ -15,7 +15,6 @@ def utc_now() -> str:
 Role = Literal["user", "assistant"]
 DEFAULT_CONVERSATION_TITLE = "New conversation"
 CONVERSATION_LOG_VERSION = 2
-DEFAULT_COMPOSITION_MODEL = "lyria-3-pro-preview"
 _MODEL_ALIASES = {
     "lyria-3-pro": "lyria-3-pro-preview",
     "lyria-3-clip": "lyria-3-clip-preview",

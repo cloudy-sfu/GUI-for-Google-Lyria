@@ -9,7 +9,6 @@ from pathlib import Path
 from workspaces.models import (
     Conversation,
     ConversationLog,
-    DEFAULT_COMPOSITION_MODEL,
     DEFAULT_CONVERSATION_TITLE,
     Mix,
     MixClip,
@@ -419,8 +418,7 @@ class Project:
             root=root,
             created_at=manifest.get("created_at") or utc_now(),
             modified_at=manifest.get("modified_at") or utc_now(),
-            default_model=resolve_model_id(manifest.get("default_model"))
-            or DEFAULT_COMPOSITION_MODEL,
+            default_model=resolve_model_id(manifest.get("default_model")),
             settings=ProjectSettings.from_dict(manifest.get("settings")),
             conversation_log=ConversationLog.from_dict(conversation_data),
             tracks=[Track.from_dict(item) for item in tracks_data.get("tracks") or []],

@@ -22,7 +22,6 @@ from PyQt6.QtWidgets import (
 from app_context import (
     APP_NAME,
     AppContext,
-    DEFAULT_TRANSLATION_MODEL,
     build_app_context,
     resolve_composition_model,
 )
@@ -56,7 +55,7 @@ from gui.widgets.editing_area import EditingArea
 from gui.workers import FnWorker
 from llm.base import GenerationRequest
 from llm.lyria3 import Lyria3Provider
-from llm.translate import translate_lrc
+from llm.translate import translate_lrc, validate_api_key
 from workspaces.ingest import generation_history, persist_generation
 from workspaces.models import Mix, MixClip, OriginalMedia, ProjectSettings, Track, \
     TrackSource
@@ -546,11 +545,15 @@ class MainWindow(QMainWindow):
             if chat is not None:
                 chat.add_warning(NO_API_KEY_WARNING)
             return
+        model_id = resolve_composition_model(
+            submission.model.strip() or self._ctx.settings.composition_model
+        )
+        if not model_id:
+            silent_message(self, "warn", "Generation", "No composition model is set.")
+            return
         provider = Lyria3Provider(
             self._ctx.settings,
-            model_id=resolve_composition_model(
-                submission.model.strip() or self._ctx.settings.composition_model
-            ),
+            model_id=model_id,
         )
         history = []
         conversation = project.conversation_by_id(submission.conversation_id)
@@ -866,11 +869,10 @@ class MainWindow(QMainWindow):
             f"Replace the existing “{target}” lyrics for this track?",
         ):
             return
-        model_id = (
-            self._ctx.settings.translation_model.strip()
-            if self._ctx.settings.translation_model
-            else DEFAULT_TRANSLATION_MODEL
-        ) or DEFAULT_TRANSLATION_MODEL
+        model_id = self._ctx.settings.translation_model.strip()
+        if not model_id:
+            silent_message(self, "warn", "Translate", "No translation model is set.")
+            return
         cues = list(transcript.cues)
         title = track.name
         self.conversation.set_busy(True)
@@ -1215,6 +1217,27 @@ class MainWindow(QMainWindow):
             return
         dialog.apply_to(self._ctx.settings)
         self._ctx.settings.save()
+        api_key = self._ctx.settings.resolved_gemini_api_key()
+        model_id = self._ctx.settings.translation_model.strip()
+        if not api_key:
+            self.conversation.clear_warnings()
+            if self._chat_window is not None:
+                self._chat_window.clear_warnings()
+            self._show_session_warnings()
+            silent_message(self, "warn", "Preferences", NO_API_KEY_WARNING)
+            return
+        if not model_id:
+            silent_message(self, "warn", "Preferences", "No translation model is set.")
+            return
+        try:
+            validate_api_key(api_key=api_key, model_id=model_id)
+        except Exception as exc:
+            silent_message(self, "warn", "Preferences", str(exc))
+            return
+        self.conversation.clear_warnings()
+        if self._chat_window is not None:
+            self._chat_window.clear_warnings()
+        self._show_session_warnings()
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)

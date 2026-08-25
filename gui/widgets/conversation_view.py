@@ -1,6 +1,6 @@
 """Left column: session warnings, rolling transcript, and the chat launcher."""
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QPalette
+from PyQt6.QtCore import QSize, QTimer, Qt, pyqtSignal
+from PyQt6.QtGui import QPalette, QResizeEvent
 from PyQt6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -9,7 +9,6 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QStyle,
     QVBoxLayout,
@@ -25,24 +24,170 @@ class WarningBubble(QFrame):
         super().__init__(parent)
         self.text = text
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         layout = QHBoxLayout(self)
-        header = QLabel()
+        self._header = QLabel()
         size = icon_size(self)
-        header.setPixmap(
+        self._header.setPixmap(
             self.style()
             .standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
             .pixmap(size, self.devicePixelRatioF())
         )
-        header.setFixedSize(size)
-        header.setToolTip("Warning")
-        header.setAccessibleName("Warning")
-        body = QLabel(text)
-        body.setWordWrap(True)
-        body.setMinimumWidth(0)
-        body.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        layout.addWidget(header)
-        layout.addWidget(body)
+        self._header.setFixedSize(size)
+        self._header.setToolTip("Warning")
+        self._header.setAccessibleName("Warning")
+        self._body = QLabel(text)
+        self._body.setWordWrap(True)
+        self._body.setMinimumWidth(0)
+        self._body.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        layout.addWidget(self._header, 0, Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(self._body, 1)
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        layout = self.layout()
+        margins = layout.contentsMargins() if layout is not None else self.contentsMargins()
+        spacing = layout.spacing() if layout is not None else 0
+        if spacing < 0:
+            spacing = 0
+        inner = max(
+            1,
+            width
+            - margins.left()
+            - margins.right()
+            - self._header.sizeHint().width()
+            - spacing
+            - self.frameWidth() * 2,
+        )
+        metrics = self._body.fontMetrics()
+        body_margins = self._body.contentsMargins()
+        text_width = max(1, inner - body_margins.left() - body_margins.right())
+        text_h = metrics.boundingRect(
+            0, 0, text_width, 0, Qt.TextFlag.TextWordWrap, self._body.text()
+        ).height()
+        body_h = text_h + body_margins.top() + body_margins.bottom()
+        content = max(self._header.sizeHint().height(), body_h)
+        return (
+            margins.top()
+            + margins.bottom()
+            + content
+            + self.frameWidth() * 2
+        )
+
+    def sizeHint(self) -> QSize:
+        width = self.width() if self.width() > 0 else super().sizeHint().width()
+        return QSize(max(width, 1), self.heightForWidth(max(width, 1)))
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, self.heightForWidth(max(self.width(), 1)))
+
+
+class WarningStrip(QWidget):
+    """Warning stack that shrinks to the remaining messages instead of keeping old height."""
+
+    def __init__(self, max_lines: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._max_lines = max_lines
+        self._texts: list[str] = []
+        self._syncing = False
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._list = QVBoxLayout(self)
+        self._list.setContentsMargins(0, 0, 0, 0)
+        self._list.setSpacing(4)
+        self.setVisible(False)
+        self.setFixedHeight(0)
+
+    def add_warning(self, text: str) -> None:
+        if text in self._texts:
+            return
+        self._texts.append(text)
+        self._list.addWidget(WarningBubble(text))
+        self.setVisible(True)
+        self._schedule_sync()
+
+    def clear_warnings(self) -> None:
+        self._texts.clear()
+        while self._list.count():
+            item = self._list.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
+        self.setVisible(False)
+        self.setFixedHeight(0)
+        self.updateGeometry()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        if self._texts and event.oldSize().width() != event.size().width():
+            self._schedule_sync()
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        if not self._texts:
+            return 0
+        return self._preferred_height(width)
+
+    def sizeHint(self) -> QSize:
+        if not self._texts:
+            return QSize(0, 0)
+        width = self.width() if self.width() > 0 else 256
+        return QSize(width, self._preferred_height(width))
+
+    def minimumSizeHint(self) -> QSize:
+        if not self._texts:
+            return QSize(0, 0)
+        width = self.width() if self.width() > 0 else 256
+        return QSize(0, self._preferred_height(width))
+
+    def _schedule_sync(self) -> None:
+        QTimer.singleShot(0, self._sync_height)
+
+    def _sync_height(self) -> None:
+        if self._syncing or not self._texts:
+            return
+        width = max(self.width(), 1)
+        self._syncing = True
+        for index in range(self._list.count()):
+            item = self._list.itemAt(index)
+            widget = item.widget() if item is not None else None
+            if widget is None or widget.isHidden():
+                continue
+            widget.setFixedHeight(widget.heightForWidth(width))
+        target = self._preferred_height(width)
+        if self.minimumHeight() != target or self.maximumHeight() != target:
+            self.setFixedHeight(target)
+            self.updateGeometry()
+            parent = self.parentWidget()
+            if parent is not None and parent.layout() is not None:
+                parent.layout().activate()
+        self._syncing = False
+
+    def _preferred_height(self, width: int) -> int:
+        cap = height_for_lines(self, self._max_lines)
+        return max(0, min(self._content_height(max(width, 1)), cap))
+
+    def _content_height(self, width: int) -> int:
+        height = self._list.contentsMargins().top() + self._list.contentsMargins().bottom()
+        visible = 0
+        spacing = self._list.spacing()
+        if spacing < 0:
+            spacing = 0
+        for index in range(self._list.count()):
+            item = self._list.itemAt(index)
+            widget = item.widget() if item is not None else None
+            if widget is None or widget.isHidden():
+                continue
+            if visible:
+                height += spacing
+            height += widget.heightForWidth(width)
+            visible += 1
+        return height
 
 
 class ConversationView(QWidget):
@@ -55,24 +200,14 @@ class ConversationView(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._warning_texts: list[str] = []
         self._transcript: Transcript | None = None
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self.warning_host = QWidget()
-        self.warning_host.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum)
-        self.warning_list = QVBoxLayout(self.warning_host)
-        self.warning_list.setContentsMargins(0, 0, 0, 0)
-        self.warning_scroll = QScrollArea()
-        self.warning_scroll.setWidgetResizable(True)
-        self.warning_scroll.setWidget(self.warning_host)
-        self.warning_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.warning_scroll.setMaximumHeight(height_for_lines(self.warning_scroll, 8))
-        self.warning_scroll.setVisible(False)
-        layout.addWidget(self.warning_scroll)
+        self.warnings = WarningStrip(5)
+        layout.addWidget(self.warnings)
 
         trans_row = QHBoxLayout()
         trans_row.addWidget(QLabel("Transcript"))
@@ -111,20 +246,10 @@ class ConversationView(QWidget):
         layout.addWidget(self.chat_button)
 
     def add_warning(self, text: str) -> None:
-        if text in self._warning_texts:
-            return
-        self._warning_texts.append(text)
-        self.warning_list.addWidget(WarningBubble(text))
-        self.warning_scroll.setVisible(True)
+        self.warnings.add_warning(text)
 
     def clear_warnings(self) -> None:
-        self._warning_texts.clear()
-        while self.warning_list.count():
-            item = self.warning_list.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.deleteLater()
-        self.warning_scroll.setVisible(False)
+        self.warnings.clear_warnings()
 
     def set_transcript(
         self,

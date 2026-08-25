@@ -9,11 +9,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from app_context import (
-    DEFAULT_COMPOSITION_MODEL,
-    DEFAULT_TRANSLATION_MODEL,
-    Settings,
-)
+from app_context import Settings
 from audio.io import EXPORT_FORMATS
 
 
@@ -32,15 +28,9 @@ class PreferencesDialog(QDialog):
         self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.api_key.setPlaceholderText("Google AI Studio API key")
         form.addRow("Gemini API key:", self.api_key)
-        self.composition_model = QLineEdit(
-            settings.composition_model or DEFAULT_COMPOSITION_MODEL
-        )
-        self.composition_model.setPlaceholderText(DEFAULT_COMPOSITION_MODEL)
+        self.composition_model = QLineEdit(settings.composition_model)
         form.addRow("Composition model:", self.composition_model)
-        self.translation_model = QLineEdit(
-            settings.translation_model or DEFAULT_TRANSLATION_MODEL
-        )
-        self.translation_model.setPlaceholderText(DEFAULT_TRANSLATION_MODEL)
+        self.translation_model = QLineEdit(settings.translation_model)
         form.addRow("Translation model:", self.translation_model)
         self.export_format = QComboBox()
         self.export_format.addItems(list(EXPORT_FORMATS))
@@ -58,10 +48,6 @@ class PreferencesDialog(QDialog):
 
     def apply_to(self, settings: Settings) -> None:
         settings.gemini_api_key = self.api_key.text().strip() or None
-        settings.composition_model = (
-            self.composition_model.text().strip() or DEFAULT_COMPOSITION_MODEL
-        )
-        settings.translation_model = (
-            self.translation_model.text().strip() or DEFAULT_TRANSLATION_MODEL
-        )
+        settings.composition_model = self.composition_model.text().strip()
+        settings.translation_model = self.translation_model.text().strip()
         settings.export_format = self.export_format.currentText()

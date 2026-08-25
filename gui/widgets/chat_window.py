@@ -29,8 +29,8 @@ from PyQt6.QtWidgets import (
 
 from gui.messages import ask_yes_no
 from gui.style import format_clock, height_for_lines, size_chat_window
-from gui.widgets.conversation_view import WarningBubble
-from app_context import APP_NAME, AppContext, DEFAULT_COMPOSITION_MODEL, resolve_composition_model
+from gui.widgets.conversation_view import WarningStrip
+from app_context import APP_NAME, AppContext, resolve_composition_model
 from workspaces.models import (
     DEFAULT_CONVERSATION_TITLE,
     Conversation,
@@ -256,8 +256,7 @@ class PromptComposer(QWidget):
         self.model = QLineEdit()
         self.model.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.model.setMinimumWidth(0)
-        self.model.setPlaceholderText(DEFAULT_COMPOSITION_MODEL)
-        self.model.setText(ctx.settings.composition_model or DEFAULT_COMPOSITION_MODEL)
+        self.model.setText(ctx.settings.composition_model)
         self.model.editingFinished.connect(self.model_edited.emit)
         self.attach = QPushButton("Attach image")
         self.attach.clicked.connect(self._attach_image)
@@ -342,11 +341,7 @@ class PromptComposer(QWidget):
         self._rebuild_attachments()
 
     def current_model(self) -> str:
-        return (
-            self.model.text().strip()
-            or self._ctx.settings.composition_model
-            or DEFAULT_COMPOSITION_MODEL
-        )
+        return self.model.text().strip() or self._ctx.settings.composition_model
 
     def set_model(self, model: str) -> None:
         self.model.blockSignals(True)
@@ -371,7 +366,6 @@ class ChatWindow(QMainWindow):
     def __init__(self, ctx: AppContext, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._ctx = ctx
-        self._warning_texts: list[str] = []
         self._busy = False
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setWindowTitle(f"Chat with Lyria — {APP_NAME}")
@@ -381,16 +375,8 @@ class ChatWindow(QMainWindow):
         root_layout = QVBoxLayout(root)
         root_layout.setContentsMargins(8, 8, 8, 8)
 
-        self.warning_host = QWidget()
-        self.warning_list = QVBoxLayout(self.warning_host)
-        self.warning_list.setContentsMargins(0, 0, 0, 0)
-        self.warning_scroll = QScrollArea()
-        self.warning_scroll.setWidgetResizable(True)
-        self.warning_scroll.setWidget(self.warning_host)
-        self.warning_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.warning_scroll.setMaximumHeight(height_for_lines(self.warning_scroll, 5))
-        self.warning_scroll.setVisible(False)
-        root_layout.addWidget(self.warning_scroll)
+        self.warnings = WarningStrip(5)
+        root_layout.addWidget(self.warnings)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         sidebar = QWidget()
@@ -486,20 +472,10 @@ class ChatWindow(QMainWindow):
         self.composer.clear()
 
     def add_warning(self, text: str) -> None:
-        if text in self._warning_texts:
-            return
-        self._warning_texts.append(text)
-        self.warning_list.addWidget(WarningBubble(text))
-        self.warning_scroll.setVisible(True)
+        self.warnings.add_warning(text)
 
     def clear_warnings(self) -> None:
-        self._warning_texts.clear()
-        while self.warning_list.count():
-            item = self.warning_list.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.deleteLater()
-        self.warning_scroll.setVisible(False)
+        self.warnings.clear_warnings()
 
     def reload(self) -> None:
         project = self._ctx.current_project
@@ -607,10 +583,10 @@ class ChatWindow(QMainWindow):
         self.generate_requested.emit(submission)
 
     def _composition_model(self) -> str:
-        return self._ctx.settings.composition_model or DEFAULT_COMPOSITION_MODEL
+        return self._ctx.settings.composition_model
 
     def _model_for(self, conversation: Conversation | None) -> str:
-        """Conversation model, else the newest model it generated with, else the default."""
+        """Conversation model, else the newest model it generated with, else settings."""
         if conversation is None:
             return self._composition_model()
         if conversation.model.strip():
