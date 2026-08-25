@@ -19,12 +19,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from app_context import (
-    APP_NAME,
-    AppContext,
-    build_app_context,
-    resolve_composition_model,
-)
+from app_context import APP_NAME, AppContext, build_app_context
 from audio.io import EXPORT_FORMATS, export_file_filter, probe, save
 from audio.render import (
     RenderCache,
@@ -65,9 +60,7 @@ from workspaces.transcript import decode_text, dump_lrc, parse_imported_lrc
 NO_PROJECT_WARNING = ("No project is open. Use File → New Project or File → Open Project "
                       "before generating.")
 NO_API_KEY_WARNING = ("No Gemini API key is set. Add a Google AI Studio API key in Edit "
-                      "→ Preferences, or set the GEMINI_API_KEY environment variable.")
-GAIN_MIN_DB = -60.0
-GAIN_MAX_DB = 24.0
+                      "→ Settings, or set the GEMINI_API_KEY environment variable.")
 
 
 def _resolve_export_destination(path: str, selected_filter: str = "") -> tuple[Path, str]:
@@ -204,7 +197,7 @@ class MainWindow(QMainWindow):
         redo = QAction("&Redo", self)
         redo.setShortcut("Ctrl+Y")
         redo.triggered.connect(self._redo)
-        prefs = QAction("&Preferences…", self)
+        prefs = QAction("&Settings…", self)
         prefs.triggered.connect(self._preferences)
 
         toggle_transcript = QAction("Toggle &Transcript panel", self)
@@ -545,9 +538,7 @@ class MainWindow(QMainWindow):
             if chat is not None:
                 chat.add_warning(NO_API_KEY_WARNING)
             return
-        model_id = resolve_composition_model(
-            submission.model.strip() or self._ctx.settings.composition_model
-        )
+        model_id = submission.model.strip() or self._ctx.settings.composition_model
         if not model_id:
             silent_message(self, "warn", "Generation", "No composition model is set.")
             return
@@ -1012,10 +1003,10 @@ class MainWindow(QMainWindow):
         gain, ok = QInputDialog.getDouble(
             self,
             "Gain",
-            "Gain (dB):",
+            "Gain (dB, in [-60, 24]):",
             float(clip.gain_db) if clip else 0.0,
-            GAIN_MIN_DB,
-            GAIN_MAX_DB,
+            -60,
+            24,
             1,
         )
         if ok:
@@ -1224,15 +1215,15 @@ class MainWindow(QMainWindow):
             if self._chat_window is not None:
                 self._chat_window.clear_warnings()
             self._show_session_warnings()
-            silent_message(self, "warn", "Preferences", NO_API_KEY_WARNING)
+            silent_message(self, "warn", "Settings", NO_API_KEY_WARNING)
             return
         if not model_id:
-            silent_message(self, "warn", "Preferences", "No translation model is set.")
+            silent_message(self, "warn", "Settings", "No translation model is set.")
             return
         try:
             validate_api_key(api_key=api_key, model_id=model_id)
         except Exception as exc:
-            silent_message(self, "warn", "Preferences", str(exc))
+            silent_message(self, "warn", "Settings", str(exc))
             return
         self.conversation.clear_warnings()
         if self._chat_window is not None:

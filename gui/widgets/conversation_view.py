@@ -221,7 +221,7 @@ class ConversationView(QWidget):
         self.import_btn.setToolTip("Import LRC lyrics for the selected track")
         self.export_btn.setToolTip("Export the current lyrics as LRC")
         self.translate_btn.setToolTip(
-            "Translate lyrics with the model set in Preferences"
+            "Translate lyrics with the model set in Settings"
         )
         self.import_btn.clicked.connect(self.import_requested.emit)
         self.export_btn.clicked.connect(self.export_requested.emit)

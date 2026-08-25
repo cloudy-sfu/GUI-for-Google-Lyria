@@ -20,7 +20,7 @@ class PreferencesDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Preferences")
+        self.setWindowTitle("Settings")
         self._settings = settings
         layout = QVBoxLayout(self)
         form = QFormLayout()

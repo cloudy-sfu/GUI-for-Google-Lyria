@@ -22,7 +22,7 @@ class Lyria3Provider:
         api_key = self._settings.resolved_gemini_api_key()
         if not api_key:
             raise RuntimeError(
-                "Lyria 3 needs a Gemini API key. Set GEMINI_API_KEY or add it in Preferences."
+                "Lyria 3 needs a Gemini API key. Set GEMINI_API_KEY or add it in Settings."
             )
         create_kwargs: dict[str, Any] = {
             "model": self.model_id,
