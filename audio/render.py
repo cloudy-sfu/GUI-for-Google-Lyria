@@ -66,7 +66,7 @@ def render_mix(
     tracks: list[Track],
     mix: Mix,
     project_root: Path,
-    samplerate: int,
+    sample_rate: int,
     clip_protection: str = "headroom",
     cache: RenderCache | None = None,
 ) -> AudioClip:
@@ -84,7 +84,7 @@ def render_mix(
     return mix_clips(
         placements,
         layout=layout_by_name(mix.channel_layout),
-        samplerate=samplerate,
+        sample_rate=sample_rate,
         clip_protection=clip_protection,
     )
 

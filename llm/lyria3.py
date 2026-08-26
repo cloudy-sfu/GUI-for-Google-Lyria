@@ -9,7 +9,6 @@ from llm.base import GeneratedAudio, GenerationRequest, GenerationResult
 from workspaces.transcript import Cue, cues_from_lyric_text
 
 _JSON_BLOCK = re.compile(r"\{.*\}", re.DOTALL)
-_LYRIA_SAMPLERATE = 44100
 _LYRIA_CHANNELS = 2
 
 
@@ -184,7 +183,6 @@ def _generated_from_audio_block(block: Any) -> GeneratedAudio | None:
     return GeneratedAudio(
         data=payload,
         mime=_audio_mime(payload, mime),
-        samplerate=_LYRIA_SAMPLERATE,
         channels=_LYRIA_CHANNELS,
     )
 

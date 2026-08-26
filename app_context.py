@@ -20,12 +20,7 @@ def default_settings_path() -> Path:
 class Settings:
     composition_model: str = ""
     gemini_api_key: str | None = None
-    samplerate: int = 44100
-    default_channel_layout: str = "stereo"
     export_format: str = "wav"
-    # https://linuxize.com/post/convert-mp4-to-mp3-with-ffmpeg/#choosing-the-quality
-    export_mp3_quality: str = "0"
-    clip_protection: str = "headroom"
     translation_model: str = ""
     recent_projects: list[str] = field(default_factory=list)
     settings_path: Path | None = None
@@ -52,11 +47,7 @@ class Settings:
                 {
                     "composition_model": self.composition_model,
                     "gemini_api_key": self.gemini_api_key,
-                    "samplerate": self.samplerate,
-                    "default_channel_layout": self.default_channel_layout,
                     "export_format": self.export_format,
-                    "export_mp3_quality": self.export_mp3_quality,
-                    "clip_protection": self.clip_protection,
                     "translation_model": self.translation_model,
                     "recent_projects": self.recent_projects,
                 },

@@ -47,10 +47,10 @@ def load_bytes(data: bytes, mime: str | None = None) -> AudioClip:
 
 
 def _load_soundfile(source: str | io.BytesIO) -> AudioClip:
-    samples, samplerate = sf.read(source, dtype="float32", always_2d=True)
+    samples, sample_rate = sf.read(source, dtype="float32", always_2d=True)
     return AudioClip(
         samples=samples,
-        samplerate=int(samplerate),
+        sample_rate=int(sample_rate),
         layout=layout_for_channel_count(samples.shape[1]),
     )
 
@@ -65,21 +65,19 @@ def _load_av(source: str | io.BytesIO) -> AudioClip:
         if stream is None:
             raise ValueError("No audio stream in file.")
         chunks: list[np.ndarray] = []
-        samplerate = int(stream.rate or 0)
+        sample_rate = int(stream.rate or 0)
         channels = int(stream.channels or 0)
         for frame in container.decode(audio=0):
-            samplerate = int(frame.sample_rate or samplerate)
+            sample_rate = int(frame.sample_rate or sample_rate)
             planar = _frame_to_planar_float(frame)
             channels = planar.shape[0]
             chunks.append(planar)
         if not chunks:
             raise ValueError("No audio frames decoded.")
         samples = np.ascontiguousarray(np.concatenate(chunks, axis=1).T, dtype=np.float32)
-        if samplerate <= 0:
-            samplerate = 44100
         return AudioClip(
             samples=samples,
-            samplerate=samplerate,
+            sample_rate=sample_rate,
             layout=layout_for_channel_count(channels or samples.shape[1]),
         )
     finally:
@@ -106,7 +104,7 @@ def save(clip: AudioClip, path: str | Path, fmt: str | None = None, mp3_quality:
     path.parent.mkdir(parents=True, exist_ok=True)
     fmt = (fmt or path.suffix.lstrip(".")).lower()
     if fmt in {"wav", "flac", "ogg"}:
-        sf.write(str(path), clip.samples, clip.samplerate, format=fmt.upper())
+        sf.write(str(path), clip.samples, clip.sample_rate, format=fmt.upper())
         return
     if fmt in _AV_EXPORT:
         _save_av(clip, path, fmt, mp3_quality)
@@ -125,7 +123,7 @@ def _save_av(clip: AudioClip, path: Path, fmt: str, mp3_quality: str) -> None:
     except Exception as exc:
         raise OSError(f"Could not create {label} file: {exc}") from exc
     try:
-        stream = output.add_stream(codec, rate=clip.samplerate)
+        stream = output.add_stream(codec, rate=clip.sample_rate)
         stream.layout = layout
         if fmt == "mp3":
             try:
@@ -147,7 +145,7 @@ def _save_av(clip: AudioClip, path: Path, fmt: str, mp3_quality: str) -> None:
                 format="fltp",
                 layout=layout,
             )
-            frame.sample_rate = clip.samplerate
+            frame.sample_rate = clip.sample_rate
             for packet in stream.encode(frame):
                 output.mux(packet)
             offset += frame_size
@@ -161,4 +159,4 @@ def _save_av(clip: AudioClip, path: Path, fmt: str, mp3_quality: str) -> None:
 
 def probe(path: str | Path) -> tuple[int, int, int]:
     clip = load(path)
-    return clip.samplerate, clip.channels, round(clip.duration_ms)
+    return clip.sample_rate, clip.channels, round(clip.duration_ms)

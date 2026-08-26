@@ -14,7 +14,6 @@ def utc_now() -> str:
 
 Role = Literal["user", "assistant"]
 DEFAULT_CONVERSATION_TITLE = "New conversation"
-CONVERSATION_LOG_VERSION = 2
 
 
 def title_from_prompt(text: str, fallback: str = DEFAULT_CONVERSATION_TITLE) -> str:
@@ -173,7 +172,6 @@ class Conversation:
 
 @dataclass
 class ConversationLog:
-    schema_version: int = CONVERSATION_LOG_VERSION
     conversations: list[Conversation] = field(default_factory=list)
     active_id: str | None = None
 
@@ -190,13 +188,11 @@ class ConversationLog:
             if active_id is None and conversations:
                 active_id = conversations[0].id
             return cls(
-                schema_version=int(data.get("schema_version", CONVERSATION_LOG_VERSION)),
                 conversations=conversations,
                 active_id=active_id,
             )
         conversation = Conversation.from_dict(data)
         return cls(
-            schema_version=CONVERSATION_LOG_VERSION,
             conversations=[conversation],
             active_id=conversation.id,
         )
@@ -236,14 +232,14 @@ class TrackSource:
 @dataclass
 class OriginalMedia:
     path: str
-    samplerate: int
+    sample_rate: int
     channels: int
     duration_ms: int
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "path": self.path,
-            "samplerate": self.samplerate,
+            "sample_rate": self.sample_rate,
             "channels": self.channels,
             "duration_ms": self.duration_ms,
         }
@@ -252,7 +248,7 @@ class OriginalMedia:
     def from_dict(cls, data: dict[str, Any]) -> OriginalMedia:
         return cls(
             path=data["path"],
-            samplerate=int(data["samplerate"]),
+            sample_rate=int(data["sample_rate"]),
             channels=int(data["channels"]),
             duration_ms=int(data["duration_ms"]),
         )
@@ -383,26 +379,3 @@ class Mix:
             if clip.track_id == track_id:
                 return clip
         return None
-
-
-@dataclass
-class ProjectSettings:
-    samplerate: int = 48000
-    default_channel_layout: str = "stereo"
-    export_format: str = "wav"
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "samplerate": self.samplerate,
-            "default_channel_layout": self.default_channel_layout,
-            "export_format": self.export_format,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> ProjectSettings:
-        data = data or {}
-        return cls(
-            samplerate=int(data.get("samplerate", 48000)),
-            default_channel_layout=data.get("default_channel_layout", "stereo"),
-            export_format=data.get("export_format", "wav"),
-        )

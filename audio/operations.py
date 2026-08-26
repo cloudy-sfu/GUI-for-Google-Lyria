@@ -16,8 +16,8 @@ from audio.librosa.spectrum import _fix_length
 from audio.librosa.timestretch import time_stretch
 
 
-def _ms_to_frame(ms: float, samplerate: int) -> int:
-    return int(round(ms / 1000.0 * samplerate))
+def _ms_to_frame(ms: float, sample_rate: int) -> int:
+    return int(round(ms / 1000.0 * sample_rate))
 
 
 def db_to_gain(gain_db: float) -> float:
@@ -33,19 +33,19 @@ def _linear_resample(samples: np.ndarray, n_frames: int) -> np.ndarray:
 
 
 def resample(clip: AudioClip, target_rate: int) -> AudioClip:
-    if clip.samplerate == target_rate:
+    if clip.sample_rate == target_rate:
         return clip
     if target_rate <= 0:
-        raise ValueError("Target samplerate must be positive.")
-    n_frames = int(np.ceil(clip.frames * target_rate / clip.samplerate))
+        raise ValueError("Target sample_rate must be positive.")
+    n_frames = int(np.ceil(clip.frames * target_rate / clip.sample_rate))
     try:
-        resampled = soxr.resample(clip.samples, clip.samplerate, target_rate, quality="HQ")
+        resampled = soxr.resample(clip.samples, clip.sample_rate, target_rate, quality="HQ")
         samples = _fix_length(np.asarray(resampled).T, n_frames).T
     except Exception:
         samples = _linear_resample(clip.samples, max(1, n_frames))
     return AudioClip(
         samples=np.ascontiguousarray(samples, dtype=np.float32),
-        samplerate=target_rate,
+        sample_rate=target_rate,
         layout=clip.layout,
     )
 
@@ -54,12 +54,12 @@ def match_layout(clip: AudioClip, layout: ChannelLayout) -> AudioClip:
     if clip.layout.name == layout.name and clip.channels == layout.count:
         return clip
     samples = convert_layout(clip.samples, clip.layout, layout)
-    return AudioClip(samples=samples, samplerate=clip.samplerate, layout=layout)
+    return AudioClip(samples=samples, sample_rate=clip.sample_rate, layout=layout)
 
 
 def cut(clip: AudioClip, start_ms: float, end_ms: float, mode: str = "keep") -> AudioClip:
-    start = max(0, _ms_to_frame(start_ms, clip.samplerate))
-    end = min(clip.frames, _ms_to_frame(end_ms, clip.samplerate))
+    start = max(0, _ms_to_frame(start_ms, clip.sample_rate))
+    end = min(clip.frames, _ms_to_frame(end_ms, clip.sample_rate))
     if end < start:
         start, end = end, start
     if mode == "keep":
@@ -70,12 +70,12 @@ def cut(clip: AudioClip, start_ms: float, end_ms: float, mode: str = "keep") -> 
         raise ValueError(f"Unknown cut mode: {mode}")
     if samples.shape[0] == 0:
         samples = np.zeros((1, clip.channels), dtype=np.float32)
-    return AudioClip(samples=samples, samplerate=clip.samplerate, layout=clip.layout)
+    return AudioClip(samples=samples, sample_rate=clip.sample_rate, layout=clip.layout)
 
 
 def volume(clip: AudioClip, gain_db: float) -> AudioClip:
     gain = np.float32(db_to_gain(gain_db))
-    return AudioClip(samples=clip.samples * gain, samplerate=clip.samplerate, layout=clip.layout)
+    return AudioClip(samples=clip.samples * gain, sample_rate=clip.sample_rate, layout=clip.layout)
 
 
 def _fade_curve(frames: int, shape: str, reverse: bool) -> np.ndarray:
@@ -85,14 +85,14 @@ def _fade_curve(frames: int, shape: str, reverse: bool) -> np.ndarray:
 
 
 def _faded(clip: AudioClip, duration_ms: float, shape: str, out: bool) -> AudioClip:
-    n = min(clip.frames, max(1, _ms_to_frame(duration_ms, clip.samplerate)))
+    n = min(clip.frames, max(1, _ms_to_frame(duration_ms, clip.sample_rate)))
     samples = clip.samples.copy()
     curve = _fade_curve(n, shape, reverse=out)[:, None]
     if out:
         samples[-n:] *= curve
     else:
         samples[:n] *= curve
-    return AudioClip(samples=samples, samplerate=clip.samplerate, layout=clip.layout)
+    return AudioClip(samples=samples, sample_rate=clip.sample_rate, layout=clip.layout)
 
 
 def fade_in(clip: AudioClip, duration_ms: float, shape: str = "linear") -> AudioClip:
@@ -106,7 +106,7 @@ def fade_out(clip: AudioClip, duration_ms: float, shape: str = "linear") -> Audi
 def reverse(clip: AudioClip) -> AudioClip:
     return AudioClip(
         samples=np.flip(clip.samples, axis=0).copy(),
-        samplerate=clip.samplerate,
+        sample_rate=clip.sample_rate,
         layout=clip.layout,
     )
 
@@ -126,7 +126,7 @@ def speed(clip: AudioClip, ratio: float, preserve_pitch: bool = True) -> AudioCl
         )
     else:
         samples = _linear_resample(clip.samples, max(1, round(clip.frames / ratio)))
-    return AudioClip(samples=samples, samplerate=clip.samplerate, layout=clip.layout)
+    return AudioClip(samples=samples, sample_rate=clip.sample_rate, layout=clip.layout)
 
 
 def channels_op(
@@ -139,7 +139,7 @@ def channels_op(
     samples = convert_layout(clip.samples, clip.layout, layout, routing=routing)
     if pan is not None and layout.name == "stereo":
         samples = pan_stereo(samples, pan)
-    return AudioClip(samples=samples, samplerate=clip.samplerate, layout=layout)
+    return AudioClip(samples=samples, sample_rate=clip.sample_rate, layout=layout)
 
 
 OPERATIONS: dict[str, Callable[..., AudioClip]] = {
@@ -164,21 +164,21 @@ class Placement:
 def mix(
     placements: list[Placement],
     layout: ChannelLayout,
-    samplerate: int,
+    sample_rate: int,
     clip_protection: str = "headroom",
 ) -> AudioClip:
     active = [item for item in placements if not item.mute]
     if not active:
         return AudioClip(
             samples=np.zeros((1, layout.count), dtype=np.float32),
-            samplerate=samplerate,
+            sample_rate=sample_rate,
             layout=layout,
         )
     aligned: list[tuple[AudioClip, int, float]] = []
     last_frame = 1
     for item in active:
-        clip = match_layout(resample(item.clip, samplerate), layout)
-        offset = max(0, _ms_to_frame(item.offset_ms, samplerate))
+        clip = match_layout(resample(item.clip, sample_rate), layout)
+        offset = max(0, _ms_to_frame(item.offset_ms, sample_rate))
         aligned.append((clip, offset, db_to_gain(item.gain_db)))
         last_frame = max(last_frame, offset + clip.frames)
     out = np.zeros((last_frame, layout.count), dtype=np.float32)
@@ -190,4 +190,4 @@ def mix(
             out = np.tanh(out).astype(np.float32)
         else:
             out *= np.float32(0.99 / peak)
-    return AudioClip(samples=out, samplerate=samplerate, layout=layout)
+    return AudioClip(samples=out, sample_rate=sample_rate, layout=layout)

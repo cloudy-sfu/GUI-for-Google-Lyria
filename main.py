@@ -52,7 +52,7 @@ from llm.base import GenerationRequest
 from llm.lyria3 import Lyria3Provider
 from llm.translate import translate_lrc
 from workspaces.ingest import generation_history, persist_generation
-from workspaces.models import Mix, MixClip, OriginalMedia, ProjectSettings, Track, \
+from workspaces.models import Mix, MixClip, OriginalMedia, Track, \
     TrackSource
 from workspaces.project import Project
 from workspaces.transcript import decode_text, dump_lrc, parse_imported_lrc
@@ -351,12 +351,8 @@ class MainWindow(QMainWindow):
         settings = self._ctx.settings
         project = Project.create(
             root,
-            default_model=settings.composition_model,
-            settings=ProjectSettings(
-                samplerate=settings.samplerate,
-                default_channel_layout=settings.default_channel_layout,
-                export_format=settings.export_format,
-            ),
+            model=settings.composition_model,
+            export_format=settings.export_format,
         )
         self._set_project(project)
 
@@ -428,7 +424,7 @@ class MainWindow(QMainWindow):
         media_id = f"aud-{uuid.uuid4().hex}"
         dest = project.copy_media(source, media_id, "audio")
         try:
-            samplerate, channels, duration_ms = probe(dest)
+            sample_rate, channels, duration_ms = probe(dest)
         except (ImportError, OSError, RuntimeError, ValueError) as exc:
             silent_message(self, "warn", "Import", str(exc))
             dest.unlink(missing_ok=True)
@@ -441,7 +437,7 @@ class MainWindow(QMainWindow):
             media_id=media_id,
             original=OriginalMedia(
                 path=project.rel(dest),
-                samplerate=samplerate,
+                sample_rate=sample_rate,
                 channels=channels,
                 duration_ms=duration_ms,
             ),
@@ -471,7 +467,7 @@ class MainWindow(QMainWindow):
                 self._render_mix_clip(project),
                 dest,
                 fmt=fmt,
-                mp3_quality=self._ctx.settings.export_mp3_quality,
+                mp3_quality=project.export_mp3_quality,
             )
             return dest
 
@@ -654,7 +650,7 @@ class MainWindow(QMainWindow):
         if name == "speed":
             return SpeedDialog(self)
         if name == "channels":
-            return ChannelsDialog(project.settings.default_channel_layout, self)
+            return ChannelsDialog(project.default_channel_layout, self)
         return None
 
     def _append_op(self, track: Track, spec: dict) -> None:
@@ -1140,7 +1136,7 @@ class MainWindow(QMainWindow):
                 clip,
                 dest,
                 fmt=fmt,
-                mp3_quality=self._ctx.settings.export_mp3_quality,
+                mp3_quality=project.export_mp3_quality,
             )
             return dest
 
@@ -1151,8 +1147,8 @@ class MainWindow(QMainWindow):
             project.tracks,
             project.mix,
             project.root,
-            samplerate=project.settings.samplerate,
-            clip_protection=self._ctx.settings.clip_protection,
+            sample_rate=project.sample_rate,
+            clip_protection=project.clip_protection,
             cache=self._cache,
         )
 

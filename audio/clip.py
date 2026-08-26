@@ -9,7 +9,7 @@ from audio.channels import ChannelLayout, layout_for_channel_count
 @dataclass
 class AudioClip:
     samples: np.ndarray
-    samplerate: int
+    sample_rate: int
     layout: ChannelLayout
 
     def __post_init__(self) -> None:
@@ -34,6 +34,6 @@ class AudioClip:
 
     @property
     def duration_ms(self) -> float:
-        if self.samplerate <= 0:
+        if self.sample_rate <= 0:
             return 0.0
-        return self.frames / self.samplerate * 1000.0
+        return self.frames / self.sample_rate * 1000.0

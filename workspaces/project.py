@@ -12,7 +12,6 @@ from workspaces.models import (
     DEFAULT_CONVERSATION_TITLE,
     Mix,
     MixClip,
-    ProjectSettings,
     Track,
     TranscriptRef,
     utc_now,
@@ -25,25 +24,12 @@ from workspaces.transcript import (
     write_transcript_file,
 )
 
-SCHEMA_VERSION = 1
-
 
 def _atomic_write_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     tmp.replace(path)
-
-
-def _read_json(path: Path):
-    with path.open(encoding="utf-8") as handle:
-        try:
-            data = json.load(handle)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"{path.name} is not valid JSON: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ValueError(f"{path.name} is not a JSON object.")
-    return data
 
 
 @dataclass
@@ -79,8 +65,12 @@ class Project:
     root: Path
     created_at: str
     modified_at: str
-    default_model: str
-    settings: ProjectSettings
+    sample_rate: int = 44100
+    default_channel_layout: str = "stereo"
+    export_format: str = "wav"
+    # https://linuxize.com/post/convert-mp4-to-mp3-with-ffmpeg/#choosing-the-quality
+    export_mp3_quality: str = "0"
+    clip_protection: str = "headroom"
     conversation_log: ConversationLog = field(default_factory=ConversationLog)
     tracks: list[Track] = field(default_factory=list)
     mix: Mix = field(default_factory=Mix)
@@ -347,17 +337,18 @@ class Project:
         _atomic_write_json(
             self.root / "project.json",
             {
-                "schema_version": SCHEMA_VERSION,
                 "created_at": self.created_at,
                 "modified_at": self.modified_at,
-                "default_model": self.default_model,
-                "settings": self.settings.to_dict(),
+                "sample_rate": self.sample_rate,
+                "default_channel_layout": self.default_channel_layout,
+                "export_format": self.export_format,
+                "export_mp3_quality": self.export_mp3_quality,
+                "clip_protection": self.clip_protection,
             },
         )
         _atomic_write_json(
             self.root / "conversation.json",
             {
-                "schema_version": self.conversation_log.schema_version,
                 "active_id": self.conversation_log.active_id,
                 "conversations": [
                     item.to_dict() for item in self.conversation_log.conversations
@@ -367,7 +358,6 @@ class Project:
         _atomic_write_json(
             self.root / "tracks.json",
             {
-                "schema_version": SCHEMA_VERSION,
                 "tracks": [track.to_dict() for track in self.tracks],
                 "mix": self.mix.to_dict(),
             },
@@ -378,8 +368,8 @@ class Project:
     def create(
         cls,
         root: Path,
-        default_model: str,
-        settings: ProjectSettings | None = None,
+        model: str = "",
+        export_format: str = "wav",
     ) -> Project:
         root = root.resolve()
         root.mkdir(parents=True, exist_ok=True)
@@ -388,10 +378,9 @@ class Project:
             root=root,
             created_at=now,
             modified_at=now,
-            default_model=default_model,
-            settings=settings or ProjectSettings(),
+            export_format=export_format,
         )
-        project.new_conversation(model=default_model)
+        project.new_conversation(model=model)
         project.ensure_dirs()
         project.save()
         return project
@@ -400,28 +389,37 @@ class Project:
     def load(cls, root: Path) -> Project:
         root = root.resolve()
         project_path = root / "project.json"
-        if not project_path.is_file():
+        if project_path.is_file():
+            with project_path.open(encoding="utf-8") as f:
+                manifest = json.load(f)
+        else:
             raise FileNotFoundError(f"Not a project folder (missing project.json): {root}")
-        manifest = _read_json(project_path)
-        conversation_data = (
-            _read_json(root / "conversation.json")
-            if (root / "conversation.json").is_file()
-            else {"schema_version": 1, "messages": []}
-        )
-        tracks_data = (
-            _read_json(root / "tracks.json")
-            if (root / "tracks.json").is_file()
-            else {"schema_version": 1, "tracks": [], "mix": {}}
-        )
+        conversation_path = root / "conversation.json"
+        if conversation_path.is_file():
+            with conversation_path.open(encoding="utf-8") as f:
+                conversations = json.load(f)
+        else:
+            conversations = {"messages": []}
+        track_path = root / "tracks.json"
+        if track_path.is_file():
+            with track_path.open(encoding="utf-8") as f:
+                tracks = json.load(f)
+        else:
+            tracks = {"tracks": [], "mix": {}}
         project = cls(
             root=root,
             created_at=manifest.get("created_at") or utc_now(),
             modified_at=manifest.get("modified_at") or utc_now(),
-            default_model=str(manifest.get("default_model") or "").strip(),
-            settings=ProjectSettings.from_dict(manifest.get("settings")),
-            conversation_log=ConversationLog.from_dict(conversation_data),
-            tracks=[Track.from_dict(item) for item in tracks_data.get("tracks") or []],
-            mix=Mix.from_dict(tracks_data.get("mix")),
+            sample_rate=manifest.get("sample_rate", cls.sample_rate),
+            default_channel_layout=manifest.get(
+                "default_channel_layout", cls.default_channel_layout
+            ),
+            export_format=manifest.get("export_format", cls.export_format),
+            export_mp3_quality=manifest.get("export_mp3_quality", cls.export_mp3_quality),
+            clip_protection=manifest.get("clip_protection", cls.clip_protection),
+            conversation_log=ConversationLog.from_dict(conversations),
+            tracks=[Track.from_dict(item) for item in tracks.get("tracks") or []],
+            mix=Mix.from_dict(tracks.get("mix")),
             dirty=False,
         )
         project.ensure_dirs()

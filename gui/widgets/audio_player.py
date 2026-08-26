@@ -49,7 +49,6 @@ class AudioPlayerWidget(QWidget):
         self._format = QAudioFormat()
         self._duration_ms = 0
         self._position_ms = 0
-        self._samplerate = 48000
         self._playing = False
         self._source_name = "No audio loaded"
         self._clip: AudioClip | None = None
@@ -278,7 +277,7 @@ class AudioPlayerWidget(QWidget):
         if self._sink.error() != QAudio.Error.NoError and self._clip is not None:
             self._stop_sink()
             fallback = device.preferredFormat()
-            if fallback.sampleRate() > 0 and self._load_pcm(self._clip, fallback):
+            if fallback.sampleRate() > 0 and self._load_pcm(self._clip):
                 self._sink = QAudioSink(device, self._format, self)
                 self._sink.setVolume(self.volume.value() / 100.0)
                 self._sink.stateChanged.connect(self._on_sink_state)
@@ -302,7 +301,6 @@ class AudioPlayerWidget(QWidget):
         if samples.size == 0:
             return False
         self._format = chosen
-        self._samplerate = max(1, chosen.sampleRate())
         self._close_reader()
         self._reader = _RatePlaybackDevice(samples, chosen, self)
         self._reader.set_rate(self._playback_rate)
@@ -411,7 +409,8 @@ class AudioPlayerWidget(QWidget):
         self.position_changed.emit(int(position_ms))
 
     def _frame_from_ms(self, position_ms: int) -> float:
-        return max(0.0, position_ms * self._samplerate / 1000.0)
+        rate = max(1, self._format.sampleRate())
+        return max(0.0, position_ms * rate / 1000.0)
 
     def _close_reader(self) -> None:
         if self._reader is None:
@@ -455,14 +454,14 @@ class _RatePlaybackDevice(QIODevice):
         self._ola = np.zeros((_OLA_GRAIN, self._channels), dtype=np.float32)
         self._window = hann(_OLA_GRAIN, sym=False).astype(np.float32)[:, None]
         self._bytes_per_frame = self._channels * _bytes_per_sample(fmt.sampleFormat())
-        self._samplerate = max(1, fmt.sampleRate())
+        self._sample_rate = max(1, fmt.sampleRate())
         self._lock = threading.Lock()
         self.open(QIODevice.OpenModeFlag.ReadOnly)
 
     def set_placement_ms(self, offset_ms: int, timeline_ms: int) -> None:
         """Place the clip on a longer timeline; frames outside it are silence."""
-        offset_frames = round(max(0, offset_ms) / 1000.0 * self._samplerate)
-        timeline_frames = round(max(0, timeline_ms) / 1000.0 * self._samplerate)
+        offset_frames = round(max(0, offset_ms) / 1000.0 * self._sample_rate)
+        timeline_frames = round(max(0, timeline_ms) / 1000.0 * self._sample_rate)
         with self._lock:
             self._offset_frames = offset_frames
             self._timeline_frames = max(
@@ -472,7 +471,7 @@ class _RatePlaybackDevice(QIODevice):
 
     def duration_ms(self) -> int:
         with self._lock:
-            return round(self._timeline_frames / self._samplerate * 1000.0)
+            return round(self._timeline_frames / self._sample_rate * 1000.0)
 
     def isSequential(self) -> bool:
         return True
@@ -505,7 +504,7 @@ class _RatePlaybackDevice(QIODevice):
         if needed < self._bytes_per_frame:
             return b""
         needed -= needed % self._bytes_per_frame
-        cap = self._bytes_per_frame * max(_OLA_HOP, self._samplerate // 10)
+        cap = self._bytes_per_frame * max(_OLA_HOP, self._sample_rate // 10)
         needed = min(needed, cap)
         with self._lock:
             while len(self._pending) < needed and self._src_pos < self._timeline_frames:

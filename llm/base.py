@@ -26,7 +26,7 @@ class GenerationRequest:
 class GeneratedAudio:
     data: bytes
     mime: str
-    samplerate: int | None = None
+    sample_rate: int | None = None
     channels: int | None = None
 
 

@@ -79,7 +79,7 @@ def persist_generation(
     for audio in result.audios:
         uid = uuid.uuid4().hex
         media_id = f"aud-{uid}"
-        dest, samplerate, channels, duration_ms = _write_generated_audio(
+        dest, sample_rate, channels, duration_ms = _write_generated_audio(
             project, media_id, audio
         )
         track_id = f"trk-{uid}"
@@ -90,7 +90,7 @@ def persist_generation(
             media_id=media_id,
             original=OriginalMedia(
                 path=project.rel(dest),
-                samplerate=samplerate,
+                sample_rate=sample_rate,
                 channels=channels,
                 duration_ms=duration_ms,
             ),
@@ -143,14 +143,14 @@ def _clone_cues(cues: list[Cue], duration_ms: int) -> list[Cue]:
 def _write_generated_audio(
     project: Project, media_id: str, audio: GeneratedAudio
 ) -> tuple[Path, int, int, int]:
-    """Store generated audio as WAV. Returns dest, samplerate, channels, duration_ms."""
-    samplerate = audio.samplerate or project.settings.samplerate
+    """Store generated audio as WAV. Returns dest, sample_rate, channels, duration_ms."""
+    sample_rate = audio.sample_rate or project.sample_rate
     channels = audio.channels or 2
     duration_ms = 30_000
     clip = None
     try:
         clip = load_bytes(audio.data, audio.mime)
-        samplerate = clip.samplerate
+        sample_rate = clip.sample_rate
         channels = clip.channels
         duration_ms = round(clip.duration_ms)
     except (ImportError, OSError, RuntimeError, ValueError):
@@ -163,7 +163,7 @@ def _write_generated_audio(
     else:
         suffix = _AUDIO_EXT.get((audio.mime or "").lower(), ".mp3")
         dest = project.write_bytes(audio.data, media_id, suffix, "audio")
-    return dest, samplerate, channels, duration_ms
+    return dest, sample_rate, channels, duration_ms
 
 
 def generation_history(project: Project, conversation: Conversation) -> list[HistoryTurn]:
