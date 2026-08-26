@@ -296,8 +296,12 @@ class AudioPlayerWidget(QWidget):
         self._timer.start()
         self._refresh_play_pause("")
 
-    def _load_pcm(self, clip: AudioClip, fmt: QAudioFormat | None = None) -> bool:
-        samples, chosen = _align_for_device(clip, fmt)
+    def _load_pcm(self, clip: AudioClip) -> bool:
+        samples = np.ascontiguousarray(
+            np.clip(clip.samples, -1.0, 1.0),
+            dtype=np.float32
+        )
+        chosen = _choose_format(clip)
         if samples.size == 0:
             return False
         self._format = chosen
@@ -305,7 +309,7 @@ class AudioPlayerWidget(QWidget):
         self._reader = _RatePlaybackDevice(samples, chosen, self)
         self._reader.set_rate(self._playback_rate)
         self._sync_reader_placement()
-        return int(samples.shape[0]) > 0
+        return samples.shape[0] > 0
 
     def _apply_placement(self, offset_ms: int, timeline_ms: int) -> None:
         self._offset_ms = max(0, offset_ms)
@@ -453,7 +457,18 @@ class _RatePlaybackDevice(QIODevice):
         self._pending = bytearray()
         self._ola = np.zeros((_OLA_GRAIN, self._channels), dtype=np.float32)
         self._window = hann(_OLA_GRAIN, sym=False).astype(np.float32)[:, None]
-        self._bytes_per_frame = self._channels * _bytes_per_sample(fmt.sampleFormat())
+        _bytes_per_sample = 0
+        # Ref: https://doc.qt.io/qt-6/qaudioformat.html#SampleFormat-enum
+        match fmt.sampleFormat():
+            case QAudioFormat.SampleFormat.Float | QAudioFormat.SampleFormat.Int32:
+                _bytes_per_sample = 4
+            case QAudioFormat.SampleFormat.Int16:
+                _bytes_per_sample = 2
+            case QAudioFormat.SampleFormat.UInt8:
+                _bytes_per_sample = 1
+            case QAudioFormat.SampleFormat.Unknown:
+                _bytes_per_sample = 0  # Or raise an exception, depending on your needs
+        self._bytes_per_frame = self._channels * _bytes_per_sample
         self._sample_rate = max(1, fmt.sampleRate())
         self._lock = threading.Lock()
         self.open(QIODevice.OpenModeFlag.ReadOnly)
@@ -582,99 +597,49 @@ def _slider_from_rate(rate: float) -> int:
     return round(_RATE_SLIDER_MAX / 2.0 * (1.0 + math.log(rate, _RATE_MAX)))
 
 
-def _bytes_per_sample(sample_format: QAudioFormat.SampleFormat) -> int:
-    if sample_format == QAudioFormat.SampleFormat.Float:
-        return 4
-    if sample_format == QAudioFormat.SampleFormat.Int32:
-        return 4
-    if sample_format == QAudioFormat.SampleFormat.UInt8:
-        return 1
-    return 2
-
-
 def _pcm_bytes(frames: np.ndarray, fmt: QAudioFormat) -> bytes:
     if frames.size == 0:
         return b""
     pcm = np.ascontiguousarray(np.clip(frames, -1.0, 1.0), dtype=np.float32)
     sample_format = fmt.sampleFormat()
-    if sample_format == QAudioFormat.SampleFormat.Float:
-        data = pcm.astype("<f4", copy=False)
-    elif sample_format == QAudioFormat.SampleFormat.Int32:
-        data = (pcm * 2147483647.0).astype("<i4")
-    elif sample_format == QAudioFormat.SampleFormat.UInt8:
-        data = ((pcm + 1.0) * 127.5).astype(np.uint8)
-    else:
-        data = (pcm * 32767.0).astype("<i2")
+    match sample_format:
+        case QAudioFormat.SampleFormat.Float:
+            data = pcm.astype("<f4", copy=False)
+        case QAudioFormat.SampleFormat.Int32:
+            data = (pcm * 2147483647.0).astype("<i4")
+        case QAudioFormat.SampleFormat.Int16:
+            data = (pcm * 32767.0).astype("<i2")
+        case QAudioFormat.SampleFormat.UInt8:
+            data = ((pcm + 1.0) * 127.5).astype(np.uint8)
+        case _:
+            raise ValueError(f"Unsupported audio sample format: {sample_format}")
     return data.tobytes(order="C")
 
 
-def _align_for_device(
-    clip: AudioClip, fmt: QAudioFormat | None = None
-) -> tuple[np.ndarray, QAudioFormat]:
-    device = QMediaDevices.defaultAudioOutput()
-    if fmt is None or fmt.sampleRate() <= 0:
-        fmt = _choose_format(clip, device)
-    else:
-        fmt = QAudioFormat(fmt)
-    rate = max(1, fmt.sampleRate())
-    channels = 2 if fmt.channelCount() >= 2 else 1
-    fmt.setSampleRate(rate)
-    fmt.setChannelCount(channels)
-    if channels == 1:
-        fmt.setChannelConfig(QAudioFormat.ChannelConfig.ChannelConfigMono)
-    else:
-        fmt.setChannelConfig(QAudioFormat.ChannelConfig.ChannelConfigStereo)
-    aligned = clip
-    if aligned.samplerate != rate:
-        aligned = resample(aligned, rate)
-    target = STEREO if channels >= 2 else MONO
-    samples = aligned.samples
-    if aligned.layout.name != target.name or aligned.channels != channels:
-        samples = convert_layout(samples, aligned.layout, target)
-    samples = np.ascontiguousarray(np.clip(samples, -1.0, 1.0), dtype=np.float32)
-    sample_format = fmt.sampleFormat()
-    if sample_format not in (
+def _choose_format(clip: AudioClip) -> QAudioFormat:
+    formats_ = [
         QAudioFormat.SampleFormat.Float,
         QAudioFormat.SampleFormat.Int32,
-        QAudioFormat.SampleFormat.UInt8,
         QAudioFormat.SampleFormat.Int16,
-    ):
-        fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
-    return samples, fmt
+        QAudioFormat.SampleFormat.UInt8,
+    ]
+    device = QMediaDevices.defaultAudioOutput()
+    preferred = device.preferredFormat().sampleFormat()
+    if not (preferred == QAudioFormat.SampleFormat.Unknown or preferred in formats_):
+        formats_.insert(0, preferred)
 
-
-def _choose_format(clip: AudioClip, device) -> QAudioFormat:
-    channels = 2 if clip.channels >= 2 else 1
-    candidates: list[QAudioFormat] = []
-
-    def add(rate: int, count: int, sample_format: QAudioFormat.SampleFormat) -> None:
-        if rate <= 0 or count <= 0:
-            return
-        fmt = QAudioFormat()
-        fmt.setSampleRate(int(rate))
-        fmt.setChannelCount(int(count))
-        fmt.setSampleFormat(sample_format)
-        if count == 1:
-            fmt.setChannelConfig(QAudioFormat.ChannelConfig.ChannelConfigMono)
+    for format_ in formats_:
+        q_audio_format = QAudioFormat()
+        q_audio_format.setSampleRate(clip.sample_rate)
+        q_audio_format.setSampleFormat(format_)
+        if clip.channels >= 2:  # A SURROUND_5_1 (5.1) clip is downmixed to L/R.
+            q_audio_format.setChannelCount(2)
+            q_audio_format.setChannelConfig(QAudioFormat.ChannelConfig.ChannelConfigStereo)
         else:
-            fmt.setChannelConfig(QAudioFormat.ChannelConfig.ChannelConfigStereo)
-        candidates.append(fmt)
-
-    if not device.isNull():
-        preferred = device.preferredFormat()
-        pref_channels = preferred.channelCount()
-        play_channels = 2 if pref_channels >= 2 else 1 if pref_channels == 1 else channels
-        pref_format = preferred.sampleFormat()
-        if pref_format == QAudioFormat.SampleFormat.Unknown:
-            pref_format = QAudioFormat.SampleFormat.Float
-        add(preferred.sampleRate(), play_channels, pref_format)
-        add(preferred.sampleRate(), play_channels, QAudioFormat.SampleFormat.Float)
-        add(preferred.sampleRate(), play_channels, QAudioFormat.SampleFormat.Int16)
-    add(clip.samplerate, channels, QAudioFormat.SampleFormat.Float)
-    add(clip.samplerate, channels, QAudioFormat.SampleFormat.Int16)
-    add(48000, channels, QAudioFormat.SampleFormat.Float)
-    add(44100, channels, QAudioFormat.SampleFormat.Int16)
-    for fmt in candidates:
-        if device.isNull() or device.isFormatSupported(fmt):
-            return fmt
-    return candidates[0] if candidates else QAudioFormat()
+            q_audio_format.setChannelCount(1)
+            q_audio_format.setChannelConfig(QAudioFormat.ChannelConfig.ChannelConfigMono)
+        if device.isNull() or device.isFormatSupported(q_audio_format):
+            break
+    else:
+        raise Exception("Cannot choose a PCM layout which the output device can open.")
+    return q_audio_format

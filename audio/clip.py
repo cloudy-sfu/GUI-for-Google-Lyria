@@ -26,11 +26,11 @@ class AudioClip:
 
     @property
     def frames(self) -> int:
-        return int(self.samples.shape[0])
+        return self.samples.shape[0]
 
     @property
     def channels(self) -> int:
-        return int(self.samples.shape[1])
+        return self.samples.shape[1]
 
     @property
     def duration_ms(self) -> float:

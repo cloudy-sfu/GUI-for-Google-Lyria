@@ -21,7 +21,7 @@ class FadeDialog(QDialog):
         self.duration.setValidator(QIntValidator(1, 3_600_000, self))
         self.shape = QComboBox()
         self.shape.addItem("Linear", "linear")
-        self.shape.addItem("Equal-power / exponential", "exp")
+        self.shape.addItem("Exponential", "exp")
         form.addRow("Duration (ms):", self.duration)
         form.addRow("Shape:", self.shape)
         layout.addLayout(form)
