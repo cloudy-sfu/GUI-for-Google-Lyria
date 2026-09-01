@@ -190,13 +190,10 @@ class WarningStrip(QWidget):
         return height
 
 
-class ConversationView(QWidget):
+class TranscriptView(QWidget):
     chat_requested = pyqtSignal()
     language_changed = pyqtSignal(str)
     cue_seek_requested = pyqtSignal(int)
-    import_requested = pyqtSignal()
-    export_requested = pyqtSignal()
-    translate_requested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -215,35 +212,12 @@ class ConversationView(QWidget):
         self.language.setMinimumWidth(0)
         self.language.currentTextChanged.connect(self.language_changed)
         trans_row.addWidget(self.language)
-        self.import_btn = QPushButton("Import")
-        self.export_btn = QPushButton("Export")
-        self.translate_btn = QPushButton("Translate")
-        self.import_btn.setToolTip("Import LRC lyrics for the selected track")
-        self.export_btn.setToolTip("Export the current lyrics as LRC")
-        self.translate_btn.setToolTip(
-            "Translate lyrics with the model set in Settings"
-        )
-        self.import_btn.clicked.connect(self.import_requested.emit)
-        self.export_btn.clicked.connect(self.export_requested.emit)
-        self.translate_btn.clicked.connect(self.translate_requested.emit)
-        trans_row.addWidget(self.import_btn)
-        trans_row.addWidget(self.export_btn)
-        trans_row.addWidget(self.translate_btn)
         trans_row.addStretch()
         layout.addLayout(trans_row)
-        self._can_import = False
-        self._can_export = False
-        self._can_translate = False
-        self._busy = False
-        self.set_transcript_actions_enabled(can_import=False, can_export=False, can_translate=False)
         self.cues = QListWidget()
         self.cues.setMinimumWidth(0)
         self.cues.itemClicked.connect(self._on_cue_clicked)
         layout.addWidget(self.cues, 1)
-
-        self.chat_button = QPushButton("Chat with Lyria")
-        self.chat_button.clicked.connect(self.chat_requested.emit)
-        layout.addWidget(self.chat_button)
 
     def add_warning(self, text: str) -> None:
         self.warnings.add_warning(text)
@@ -269,29 +243,8 @@ class ConversationView(QWidget):
         self.language.blockSignals(False)
         self._reload_cues()
 
-    def set_transcript_actions_enabled(
-        self,
-        *,
-        can_import: bool,
-        can_export: bool,
-        can_translate: bool,
-    ) -> None:
-        self._can_import = can_import
-        self._can_export = can_export
-        self._can_translate = can_translate
-        self._apply_action_enabled()
-
     def set_busy(self, busy: bool) -> None:
-        self._busy = busy
-        self._apply_action_enabled()
-
-    def _apply_action_enabled(self) -> None:
-        idle = not self._busy
-        self.import_btn.setEnabled(idle and self._can_import)
-        self.export_btn.setEnabled(idle and self._can_export)
-        self.translate_btn.setEnabled(idle and self._can_translate)
-        self.language.setEnabled(idle)
-        self.translate_btn.setText("Translating…" if self._busy else "Translate")
+        self.language.setEnabled(not busy)
 
     def highlight_at(self, position_ms: int) -> None:
         if self._transcript is None:

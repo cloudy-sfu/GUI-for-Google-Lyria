@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
 
 from gui.messages import ask_yes_no
 from gui.style import format_clock, height_for_lines, size_chat_window
-from gui.widgets.conversation_view import WarningStrip
+from gui.widgets.transcript_area import WarningStrip
 from app_context import APP_NAME, AppContext
 from workspaces.models import (
     DEFAULT_CONVERSATION_TITLE,

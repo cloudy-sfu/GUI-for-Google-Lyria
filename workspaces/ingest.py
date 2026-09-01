@@ -3,6 +3,7 @@ import uuid
 from pathlib import Path
 
 from audio.io import load_bytes, save
+from llm.base import GeneratedAudio, GenerationRequest, GenerationResult, HistoryTurn
 from workspaces.models import (
     ContentPart,
     Conversation,
@@ -15,7 +16,6 @@ from workspaces.models import (
 )
 from workspaces.project import Project
 from workspaces.transcript import Cue, cues_from_lyric_text
-from llm.base import GeneratedAudio, GenerationRequest, GenerationResult, HistoryTurn
 
 _AUDIO_EXT = {
     "audio/wav": ".wav",

@@ -45,8 +45,8 @@ from gui.style import (
     wheel_time_delta_ms,
 )
 from gui.widgets.chat_window import ChatWindow, PromptSubmission
-from gui.widgets.conversation_view import ConversationView
 from gui.widgets.editing_area import EditingArea
+from gui.widgets.transcript_area import TranscriptView
 from gui.workers import FnWorker
 from llm.base import GenerationRequest
 from llm.lyria3 import Lyria3Provider
@@ -122,7 +122,7 @@ class MainWindow(QMainWindow):
 
         root_layout = QVBoxLayout()
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.conversation = ConversationView()
+        self.conversation = TranscriptView()
         self.editing = EditingArea()
         self.splitter.addWidget(self.conversation)
         self.splitter.addWidget(self.editing)
@@ -135,9 +135,6 @@ class MainWindow(QMainWindow):
         self.conversation.chat_requested.connect(self._open_chat)
         self.conversation.language_changed.connect(self._on_language_changed)
         self.conversation.cue_seek_requested.connect(self._on_cue_seek)
-        self.conversation.import_requested.connect(self._import_transcript)
-        self.conversation.export_requested.connect(self._export_transcript)
-        self.conversation.translate_requested.connect(self._translate_transcript)
         self.editing.edit_requested.connect(self._on_edit)
         self.editing.player.mixed_requested.connect(self._play_mixed)
         self.editing.player.position_changed.connect(self._on_playhead)
@@ -168,6 +165,8 @@ class MainWindow(QMainWindow):
         self.editing.timeline.set_selected(self._selected_track_id())
 
     def _build_menus(self, layout: QVBoxLayout) -> None:
+        menu = QMenuBar(self)
+
         new_project = QAction("&New Project", self)
         new_project.setShortcut("Ctrl+N")
         new_project.triggered.connect(self._new_project)
@@ -190,6 +189,12 @@ class MainWindow(QMainWindow):
         exit_ = QAction("E&xit", self)
         exit_.setShortcut("Ctrl+Q")
         exit_.triggered.connect(self.close)
+        project_menu = QMenu("&Project", self)
+        project_menu.addActions([new_project, open_project, save, save_as])
+        project_menu.addMenu(self._recent_menu)
+        project_menu.addSeparator()
+        project_menu.addActions([close_project, exit_])
+        menu.addMenu(project_menu)
 
         undo = QAction("&Undo", self)
         undo.setShortcut("Ctrl+Z")
@@ -199,45 +204,54 @@ class MainWindow(QMainWindow):
         redo.triggered.connect(self._redo)
         prefs = QAction("&Settings…", self)
         prefs.triggered.connect(self._preferences)
+        audio_menu = QMenu("&Audio", self)
+        audio_menu.addActions([undo, redo])
+        audio_menu.addSeparator()
+        audio_menu.addActions([import_audio, export_mix])
+        audio_menu.addSeparator()
+        audio_menu.addAction(prefs)
+        menu.addMenu(audio_menu)
+
+        self._import_lyrics_action = QAction("&Import…", self)
+        self._import_lyrics_action.setToolTip("Import LRC lyrics for the selected track")
+        self._import_lyrics_action.triggered.connect(self._import_transcript)
+        self._export_lyrics_action = QAction("&Export…", self)
+        self._export_lyrics_action.setToolTip("Export the current lyrics as LRC")
+        self._export_lyrics_action.triggered.connect(self._export_transcript)
+        self._translate_lyrics_action = QAction("&Translate", self)
+        self._translate_lyrics_action.setToolTip("Translate lyrics with the model set in Settings")
+        self._translate_lyrics_action.triggered.connect(self._translate_transcript)
+        lyric_menu = QMenu("&Lyrics", self)
+        lyric_menu.addActions([
+            self._import_lyrics_action,
+            self._export_lyrics_action,
+            self._translate_lyrics_action,
+        ])
+        menu.addMenu(lyric_menu)
 
         toggle_transcript = QAction("Toggle &Transcript panel", self)
         toggle_transcript.setShortcut("Ctrl+T")
         toggle_transcript.setCheckable(True)
         toggle_transcript.setChecked(True)
         toggle_transcript.toggled.connect(lambda on: self.conversation.setVisible(on))
+        reset_layout = QAction("&Reset Layout", self)
+        reset_layout.triggered.connect(self._reset_layout)
         open_chat = QAction("&Chat with Lyria", self)
         open_chat.setShortcut("Ctrl+L")
         open_chat.triggered.connect(self._open_chat)
-        reset_layout = QAction("&Reset Layout", self)
-        reset_layout.triggered.connect(self._reset_layout)
+        view_menu = QMenu("&View", self)
+        view_menu.addActions([reset_layout, toggle_transcript, open_chat])
+        menu.addMenu(view_menu)
 
         shortcuts = QAction("&Shortcuts", self)
         shortcuts.setShortcut("F1")
         shortcuts.triggered.connect(lambda: ShortcutsDialog(self).exec())
         timeline_help = QAction("&Time line", self)
         timeline_help.triggered.connect(lambda: TimelineHelpDialog(self).exec())
-
-        file_menu = QMenu("&Project", self)
-        file_menu.addActions([new_project, open_project, save, save_as])
-        file_menu.addMenu(self._recent_menu)
-        file_menu.addSeparator()
-        file_menu.addActions([close_project, exit_])
-        edit_menu = QMenu("&Edit", self)
-        edit_menu.addActions([undo, redo])
-        edit_menu.addSeparator()
-        edit_menu.addActions([import_audio, export_mix])
-        edit_menu.addSeparator()
-        edit_menu.addAction(prefs)
-        view_menu = QMenu("&Layout", self)
-        view_menu.addActions([toggle_transcript, open_chat, reset_layout])
         help_menu = QMenu("&Help", self)
         help_menu.addActions([shortcuts, timeline_help])
-
-        menu = QMenuBar(self)
-        menu.addMenu(file_menu)
-        menu.addMenu(edit_menu)
-        menu.addMenu(view_menu)
         menu.addMenu(help_menu)
+
         layout.setMenuBar(menu)
 
         # Everything that needs an open project to do anything useful.
@@ -284,6 +298,25 @@ class MainWindow(QMainWindow):
             )
         self._reload_tracks()
 
+    def _set_transcript_actions_enabled(self, *, can_import: bool, can_export: bool, can_translate: bool) -> None:
+        self._can_import = can_import
+        self._can_export = can_export
+        self._can_translate = can_translate
+        self._apply_transcript_actions_enabled()
+
+    def _apply_transcript_actions_enabled(self) -> None:
+        busy = getattr(self, "_transcript_busy", False)
+        idle = not busy
+        self._import_lyrics_action.setEnabled(idle and getattr(self, "_can_import", False))
+        self._export_lyrics_action.setEnabled(idle and getattr(self, "_can_export", False))
+        self._translate_lyrics_action.setEnabled(idle and getattr(self, "_can_translate", False))
+        self.conversation.set_busy(busy)
+        self._translate_lyrics_action.setText("Translating…" if busy else "&Translate")
+
+    def _set_transcript_busy(self, busy: bool) -> None:
+        self._transcript_busy = busy
+        self._apply_transcript_actions_enabled()
+
     def _set_project(self, project: Project | None) -> None:
         self.editing.player.stop()
         self._cache.invalidate()
@@ -301,7 +334,7 @@ class MainWindow(QMainWindow):
         self._sync_actions()
         self.editing.player.set_clip(None)
         self.conversation.set_transcript(None, [])
-        self.conversation.set_transcript_actions_enabled(
+        self._set_transcript_actions_enabled(
             can_import=False, can_export=False, can_translate=False
         )
         if project is not None:
@@ -862,7 +895,7 @@ class MainWindow(QMainWindow):
             return
         cues = list(transcript.cues)
         title = track.name
-        self.conversation.set_busy(True)
+        self._set_transcript_busy(True)
 
         def work():
             return translate_lrc(
@@ -875,7 +908,7 @@ class MainWindow(QMainWindow):
             )
 
         def ok_result(translated) -> None:
-            self.conversation.set_busy(False)
+            self._set_transcript_busy(False)
             project.snapshot_edits()
             project.save_transcript(track, target, "translated", translated)
             project.save()
@@ -883,7 +916,7 @@ class MainWindow(QMainWindow):
             self._refresh_transcript(track, preferred=target)
 
         def err(message: str) -> None:
-            self.conversation.set_busy(False)
+            self._set_transcript_busy(False)
             silent_message(self, "warn", "Translate", message)
 
         self._run(work, ok_result, err)
@@ -936,7 +969,7 @@ class MainWindow(QMainWindow):
         track = project.track_by_id(track_id) if track_id else None
         if track is None:
             self.conversation.set_transcript(None, [])
-            self.conversation.set_transcript_actions_enabled(
+            self._set_transcript_actions_enabled(
                 can_import=False, can_export=False, can_translate=False
             )
             return
@@ -1054,7 +1087,7 @@ class MainWindow(QMainWindow):
         transcript = project.load_transcript(track, current) if current else None
         self.conversation.set_transcript(transcript, languages, preferred=current or None)
         has_cues = transcript is not None and bool(transcript.cues)
-        self.conversation.set_transcript_actions_enabled(
+        self._set_transcript_actions_enabled(
             can_import=True,
             can_export=has_cues,
             can_translate=has_cues,
@@ -1075,7 +1108,7 @@ class MainWindow(QMainWindow):
             preferred=language,
         )
         has_cues = loaded is not None and bool(loaded.cues)
-        self.conversation.set_transcript_actions_enabled(
+        self._set_transcript_actions_enabled(
             can_import=True,
             can_export=has_cues,
             can_translate=has_cues,
