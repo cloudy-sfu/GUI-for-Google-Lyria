@@ -33,12 +33,5 @@ Run the following command in terminal.
 python main.py
 ```
 
-![image-20260827150942195](./assets/image-20260827150942195.png)
 
-The following files are the documentation.
-
--   [Create a new project](./docs/create_new_project.md)
--   [Configure generative models](./docs/config_gen_models.md)
--   [Generate audios](./docs/gen_audios.md)
--   [Mix tracks in time line](./docs/time_line.md)
 

@@ -38,7 +38,6 @@ from gui.dialogs.speed_dialog import SpeedDialog
 from gui.dialogs.timeline_help_dialog import TimelineHelpDialog
 from gui.messages import ask_save_discard_cancel, ask_yes_no, silent_message
 from gui.style import (
-    apply_stylesheet,
     format_clock_ms,
     parse_clock_ms,
     size_main_window,
@@ -176,24 +175,27 @@ class MainWindow(QMainWindow):
         save = QAction("&Save", self)
         save.setShortcut("Ctrl+S")
         save.triggered.connect(self._save)
-        save_as = QAction("Save &As…", self)
+        save_as = QAction("Save &As...", self)
         save_as.setShortcut("Ctrl+Shift+S")
         save_as.triggered.connect(self._save_as)
         self._recent_menu = QMenu("Recent Projects", self)
-        import_audio = QAction("&Import Audio…", self)
+        import_audio = QAction("&Import Audio...", self)
         import_audio.triggered.connect(self._import_audio)
-        export_mix = QAction("&Export Mix…", self)
+        export_mix = QAction("&Export Mix...", self)
         export_mix.triggered.connect(self._export_mix)
         close_project = QAction("&Close Project", self)
         close_project.triggered.connect(self._close_project)
         exit_ = QAction("E&xit", self)
         exit_.setShortcut("Ctrl+Q")
         exit_.triggered.connect(self.close)
+        settings = QAction("&Settings...", self)
+        settings.triggered.connect(self._settings)
         project_menu = QMenu("&Project", self)
         project_menu.addActions([new_project, open_project, save, save_as])
         project_menu.addMenu(self._recent_menu)
+        project_menu.addAction(close_project)
         project_menu.addSeparator()
-        project_menu.addActions([close_project, exit_])
+        project_menu.addActions([settings, exit_])
         menu.addMenu(project_menu)
 
         undo = QAction("&Undo", self)
@@ -202,20 +204,22 @@ class MainWindow(QMainWindow):
         redo = QAction("&Redo", self)
         redo.setShortcut("Ctrl+Y")
         redo.triggered.connect(self._redo)
-        prefs = QAction("&Settings…", self)
-        prefs.triggered.connect(self._preferences)
-        audio_menu = QMenu("&Audio", self)
-        audio_menu.addActions([undo, redo])
-        audio_menu.addSeparator()
-        audio_menu.addActions([import_audio, export_mix])
-        audio_menu.addSeparator()
-        audio_menu.addAction(prefs)
-        menu.addMenu(audio_menu)
 
-        self._import_lyrics_action = QAction("&Import…", self)
+        open_chat = QAction("&Chat with Lyria", self)
+        open_chat.setShortcut("Ctrl+L")
+        open_chat.triggered.connect(self._open_chat)
+        compose_menu = QMenu("&Compose", self)
+        compose_menu.addActions([undo, redo])
+        compose_menu.addSeparator()
+        compose_menu.addActions([import_audio, open_chat])
+        compose_menu.addSeparator()
+        compose_menu.addActions([export_mix])
+        menu.addMenu(compose_menu)
+
+        self._import_lyrics_action = QAction("&Import...", self)
         self._import_lyrics_action.setToolTip("Import LRC lyrics for the selected track")
         self._import_lyrics_action.triggered.connect(self._import_transcript)
-        self._export_lyrics_action = QAction("&Export…", self)
+        self._export_lyrics_action = QAction("&Export...", self)
         self._export_lyrics_action.setToolTip("Export the current lyrics as LRC")
         self._export_lyrics_action.triggered.connect(self._export_transcript)
         self._translate_lyrics_action = QAction("&Translate", self)
@@ -236,11 +240,8 @@ class MainWindow(QMainWindow):
         toggle_transcript.toggled.connect(lambda on: self.conversation.setVisible(on))
         reset_layout = QAction("&Reset Layout", self)
         reset_layout.triggered.connect(self._reset_layout)
-        open_chat = QAction("&Chat with Lyria", self)
-        open_chat.setShortcut("Ctrl+L")
-        open_chat.triggered.connect(self._open_chat)
         view_menu = QMenu("&View", self)
-        view_menu.addActions([reset_layout, toggle_transcript, open_chat])
+        view_menu.addActions([reset_layout, toggle_transcript])
         menu.addMenu(view_menu)
 
         shortcuts = QAction("&Shortcuts", self)
@@ -311,7 +312,7 @@ class MainWindow(QMainWindow):
         self._export_lyrics_action.setEnabled(idle and getattr(self, "_can_export", False))
         self._translate_lyrics_action.setEnabled(idle and getattr(self, "_can_translate", False))
         self.conversation.set_busy(busy)
-        self._translate_lyrics_action.setText("Translating…" if busy else "&Translate")
+        self._translate_lyrics_action.setText("Translating..." if busy else "&Translate")
 
     def _set_transcript_busy(self, busy: bool) -> None:
         self._transcript_busy = busy
@@ -877,7 +878,7 @@ class MainWindow(QMainWindow):
         target, ok = QInputDialog.getText(
             self,
             "Translate lyrics",
-            "Translate into (BCP-47 code, e.g. zh, ja, fr):",
+            "Translate into (BCP-47 code):",
         )
         if not ok or not target.strip():
             return
@@ -1231,7 +1232,7 @@ class MainWindow(QMainWindow):
         self._sync_actions()
         self._queue_render()
 
-    def _preferences(self) -> None:
+    def _settings(self) -> None:
         dialog = PreferencesDialog(self._ctx.settings, self)
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
@@ -1329,7 +1330,9 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
-    apply_stylesheet(app)
+    with open("gui/style.css") as f:
+        style = f.read()
+    app.setStyleSheet(style)
     ctx = AppContext(settings=Settings.load())
     window = MainWindow(ctx)
     window.show()

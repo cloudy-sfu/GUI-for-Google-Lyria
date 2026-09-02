@@ -9,17 +9,6 @@ _WHEEL_NOTCH = 120
 _MS_PER_SCROLL_LINE = 1000
 _PIXELS_PER_NOTCH = 50
 
-FONT_STYLESHEET = (
-    "QWidget {"
-    '  font-family: "Microsoft YaHei", Calibri, Ubuntu;'
-    "  font-size: 12pt;"
-    "}"
-)
-
-
-def apply_stylesheet(app: QApplication) -> None:
-    app.setStyleSheet(FONT_STYLESHEET)
-
 
 def fit_interactive_columns(table: QTableView) -> None:
     """Fit each column to contents, then leave widths user-adjustable.

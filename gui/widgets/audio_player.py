@@ -63,26 +63,16 @@ class AudioPlayerWidget(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        transport = QHBoxLayout()
+
+        vol_row = QHBoxLayout()
         self.play_pause_btn = self._transport_button(
             QStyle.StandardPixmap.SP_MediaPlay, "Play"
         )
         self.stop_btn = self._transport_button(QStyle.StandardPixmap.SP_MediaStop, "Stop")
         self.play_pause_btn.clicked.connect(self.toggle_play_pause)
         self.stop_btn.clicked.connect(self.stop)
-        self.time_label = QLabel("00:00 / 00:00")
-        self.mixed_btn = QPushButton("Mixed")
-        self.mixed_btn.setEnabled(False)
-        self.mixed_btn.setToolTip("Load the whole mix and play it")
-        self.mixed_btn.clicked.connect(self.mixed_requested.emit)
-        transport.addWidget(self.play_pause_btn)
-        transport.addWidget(self.stop_btn)
-        transport.addWidget(self.time_label)
-        transport.addWidget(self.mixed_btn)
-        transport.addStretch(1)
-        layout.addLayout(transport)
-
-        vol_row = QHBoxLayout()
+        vol_row.addWidget(self.play_pause_btn)
+        vol_row.addWidget(self.stop_btn)
         vol_row.addWidget(QLabel("Volume"))
         self.volume = QSlider(Qt.Orientation.Horizontal)
         self.volume.setRange(0, 100)
@@ -106,14 +96,24 @@ class AudioPlayerWidget(QWidget):
         self.speed_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
+        vol_row.addWidget(self.playback)
+        vol_row.addWidget(self.speed_label)
+        vol_row.addStretch(1)
+
+        transport = QHBoxLayout()
+        self.mixed_btn = QPushButton("All tracks")
+        self.mixed_btn.setEnabled(False)
+        self.mixed_btn.setToolTip("Load the whole mix and play it")
+        self.mixed_btn.clicked.connect(self.mixed_requested.emit)
         self.reset_rate_btn = QPushButton("1x")
         self.reset_rate_btn.setToolTip("Set playback rate to 1.00×")
         self.reset_rate_btn.setAccessibleName("Set playback rate to 1x")
         self.reset_rate_btn.clicked.connect(self._reset_playback_rate)
-        vol_row.addWidget(self.playback)
-        vol_row.addWidget(self.speed_label)
-        vol_row.addWidget(self.reset_rate_btn)
-        vol_row.addStretch(1)
+        transport.addWidget(self.mixed_btn)
+        transport.addWidget(self.reset_rate_btn)
+        transport.addStretch(1)
+
+        layout.addLayout(transport)
         layout.addLayout(vol_row)
         self._apply_em_sizes()
 
@@ -407,9 +407,6 @@ class AudioPlayerWidget(QWidget):
         self._position_ms = min(max(pos, 0), self._duration_ms)
 
     def _set_position_display(self, position_ms: int) -> None:
-        self.time_label.setText(
-            f"{format_clock(position_ms)} / {format_clock(self._duration_ms)}"
-        )
         self.position_changed.emit(int(position_ms))
 
     def _frame_from_ms(self, position_ms: int) -> float:
