@@ -4,7 +4,7 @@ import uuid
 from dataclasses import replace
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, QObject, Qt, QThreadPool, QTimer
+from PyQt6.QtCore import QEvent, QObject, Qt, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QCloseEvent, QShowEvent, QWheelEvent
 from PyQt6.QtWidgets import (
     QAbstractScrollArea,
@@ -36,6 +36,7 @@ from gui.dialogs.preferences_dialog import PreferencesDialog
 from gui.dialogs.shortcuts_dialog import ShortcutsDialog
 from gui.dialogs.speed_dialog import SpeedDialog
 from gui.dialogs.timeline_help_dialog import TimelineHelpDialog
+from gui.lyrics_server import ensure_lyrics_server, stop_lyrics_server
 from gui.messages import ask_save_discard_cancel, ask_yes_no, silent_message
 from gui.style import (
     format_clock_ms,
@@ -60,6 +61,18 @@ NO_PROJECT_WARNING = ("No project is open. Use File → New Project or File → 
                       "before generating.")
 NO_API_KEY_WARNING = ("No Gemini API key is set. Add a Google AI Studio API key in Edit "
                       "→ Settings.")
+bcp_47_lang_codes = {}
+bcp_47_lang_codes_inv = {}
+with open("bcp_47.txt", "r", encoding="utf-8") as f:
+    lines = f.readlines()
+for line in lines:
+    if (not line) or line.startswith("#"):
+        continue
+    lang_name, lang_code = line.split(",", 1)
+    lang_name = lang_name.strip()
+    lang_code = lang_code.strip()
+    bcp_47_lang_codes[lang_code] = lang_name
+    bcp_47_lang_codes_inv[lang_name] = lang_code
 
 
 def _resolve_export_destination(path: str, selected_filter: str = "") -> tuple[Path, str]:
@@ -106,13 +119,26 @@ def _uses_native_wheel(widget: QWidget) -> bool:
     return False
 
 
+def _align_track(project: Project, track: Track) -> AlignTrack:
+    clip = project.mix.clip_for_track(track.id)
+    return AlignTrack(
+        track_id=track.id,
+        name=track.name,
+        offset_ms=int(clip.offset_ms) if clip else 0,
+        duration_ms=estimate_track_duration_ms(track),
+    )
+
+
 class MainWindow(QMainWindow):
+    web_lyrics_saved = pyqtSignal(str, str, str)
+
     def __init__(self, ctx: AppContext, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._ctx = ctx
         self._cache = RenderCache()
         self._pool = QThreadPool.globalInstance()
         self._workers: list[FnWorker] = []
+        self._web_editor_files: list[Path] = []
         self._play_track_id: str | None = None
         self._autoplay_next = False
         self._chat_window: ChatWindow | None = None
@@ -149,6 +175,7 @@ class MainWindow(QMainWindow):
         central = QWidget()
         central.setLayout(root_layout)
         self.setCentralWidget(central)
+        self.web_lyrics_saved.connect(self._on_web_lyrics_saved)
         self._sync_actions()
         self._show_session_warnings()
         app = QApplication.instance()
@@ -225,11 +252,15 @@ class MainWindow(QMainWindow):
         self._translate_lyrics_action = QAction("&Translate", self)
         self._translate_lyrics_action.setToolTip("Translate lyrics with the model set in Settings")
         self._translate_lyrics_action.triggered.connect(self._translate_transcript)
+        self._edit_lyrics_web_action = QAction("&Edit tool (web)", self)
+        self._edit_lyrics_web_action.setToolTip("Open in local web editor")
+        self._edit_lyrics_web_action.triggered.connect(self._edit_lyrics_web)
         lyric_menu = QMenu("&Lyrics", self)
         lyric_menu.addActions([
             self._import_lyrics_action,
             self._export_lyrics_action,
             self._translate_lyrics_action,
+            self._edit_lyrics_web_action,
         ])
         menu.addMenu(lyric_menu)
 
@@ -311,6 +342,7 @@ class MainWindow(QMainWindow):
         self._import_lyrics_action.setEnabled(idle and getattr(self, "_can_import", False))
         self._export_lyrics_action.setEnabled(idle and getattr(self, "_can_export", False))
         self._translate_lyrics_action.setEnabled(idle and getattr(self, "_can_translate", False))
+        self._edit_lyrics_web_action.setEnabled(idle and getattr(self, "_can_export", False))
         self.conversation.set_busy(busy)
         self._translate_lyrics_action.setText("Translating..." if busy else "&Translate")
 
@@ -318,9 +350,18 @@ class MainWindow(QMainWindow):
         self._transcript_busy = busy
         self._apply_transcript_actions_enabled()
 
+    def _cleanup_web_editor_files(self) -> None:
+        for path in self._web_editor_files:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        self._web_editor_files.clear()
+
     def _set_project(self, project: Project | None) -> None:
         self.editing.player.stop()
         self._cache.invalidate()
+        self._cleanup_web_editor_files()
         self._play_track_id = None
         self.conversation.clear_warnings()
         if self._chat_window is not None:
@@ -593,7 +634,7 @@ class MainWindow(QMainWindow):
         def work():
             return provider.generate(request)
 
-        def ok(result) -> None:
+        def ok_result(result) -> None:
             if self._chat_window is not None:
                 self._chat_window.set_busy(False)
             try:
@@ -626,7 +667,7 @@ class MainWindow(QMainWindow):
                 self._chat_window.set_busy(False)
             silent_message(self, "warn", "Generation", message)
 
-        self._run(work, ok, err)
+        self._run(work, ok_result, err)
 
     def _selected_track(self) -> Track | None:
         """The single edit target, or None when nothing usable is selected."""
@@ -667,25 +708,37 @@ class MainWindow(QMainWindow):
             self._append_op(track, {"op": "reverse"})
             return
         if name == "clear_edits":
-            self._clear_edits(track)
+            project = self._ctx.current_project
+            if project is None or not track.operations:
+                return
+            if not ask_yes_no(
+                    self,
+                    "Clear edits",
+                    "Discard the operation chain on this track? The original audio is untouched.",
+            ):
+                return
+            project.snapshot_edits()
+            track.operations.clear()
+            self._cache.invalidate(track.id)
+            project.mark_dirty()
+            self._sync_actions()
+            self._queue_render()
             return
-        dialog = self._op_dialog(name, project, track)
+        dialog = None
+        match name:
+            case "cut":
+                dialog = CutDialog(self, track.original.duration_ms)
+            case "fade_in":
+                dialog = FadeDialog("Fade In", self)
+            case "fade_out":
+                dialog = FadeDialog("Fade Out", self)
+            case "speed":
+                dialog = SpeedDialog(self)
+            case "channels":
+                dialog = ChannelsDialog(project.default_channel_layout, self)
         if dialog is None or dialog.exec() != dialog.DialogCode.Accepted:
             return
         self._append_op(track, _op_spec(name, dialog.values()))
-
-    def _op_dialog(self, name: str, project: Project, track: Track):
-        if name == "cut":
-            return CutDialog(self, track.original.duration_ms)
-        if name == "fade_in":
-            return FadeDialog("Fade In", self)
-        if name == "fade_out":
-            return FadeDialog("Fade Out", self)
-        if name == "speed":
-            return SpeedDialog(self)
-        if name == "channels":
-            return ChannelsDialog(project.default_channel_layout, self)
-        return None
 
     def _append_op(self, track: Track, spec: dict) -> None:
         project = self._ctx.current_project
@@ -698,30 +751,13 @@ class MainWindow(QMainWindow):
         self._sync_actions()
         self._queue_render()
 
-    def _clear_edits(self, track: Track) -> None:
-        project = self._ctx.current_project
-        if project is None or not track.operations:
-            return
-        if not ask_yes_no(
-            self,
-            "Clear edits",
-            "Discard the operation chain on this track? The original audio is untouched.",
-        ):
-            return
-        project.snapshot_edits()
-        track.operations.clear()
-        self._cache.invalidate(track.id)
-        project.mark_dirty()
-        self._sync_actions()
-        self._queue_render()
-
     def _align_selected(self) -> None:
         project = self._ctx.current_project
         track = self._require_track()
         if project is None or track is None:
             return
         references = [
-            self._align_track(project, item)
+            _align_track(project, item)
             for item in project.tracks
             if item.id != track.id
         ]
@@ -734,7 +770,7 @@ class MainWindow(QMainWindow):
                 "track unselected as the reference.",
             )
             return
-        dialog = AlignDialog([self._align_track(project, track)], references, self)
+        dialog = AlignDialog([_align_track(project, track)], references, self)
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         offsets = dialog.offsets()
@@ -750,15 +786,6 @@ class MainWindow(QMainWindow):
         project.mark_dirty()
         self._sync_actions()
         self._queue_render()
-
-    def _align_track(self, project: Project, track: Track) -> AlignTrack:
-        clip = project.mix.clip_for_track(track.id)
-        return AlignTrack(
-            track_id=track.id,
-            name=track.name,
-            offset_ms=int(clip.offset_ms) if clip else 0,
-            duration_ms=estimate_track_duration_ms(track),
-        )
 
     def _export_selected_track(self) -> None:
         track = self._require_track()
@@ -809,12 +836,15 @@ class MainWindow(QMainWindow):
                 "This file does not contain LRC timestamps such as [00:16.00].",
             )
             return
-        current = self.conversation.language.currentText().strip() or "en"
-        language, ok = QInputDialog.getText(
+        lang_code_list = list(bcp_47_lang_codes.keys())
+        current_idx = lang_code_list.index(self.conversation.language.currentText())
+        language, ok = QInputDialog.getItem(
             self,
             "Import LRC",
-            "Language code (e.g. en, zh, ja):",
-            text=current,
+            "Language code:",
+            list(bcp_47_lang_codes.values()),
+            current_idx,
+            False,
         )
         if not ok or not language.strip():
             return
@@ -857,6 +887,85 @@ class MainWindow(QMainWindow):
             return
         silent_message(self, "info", "Export", f"Wrote {dest}")
 
+    def _on_web_lyrics_saved(self, track_id: str, language: str, lyrics_text: str) -> None:
+        project = self._ctx.current_project
+        if project is None:
+            return
+        track = project.track_by_id(track_id)
+        if track is None:
+            return
+            
+        cues = parse_imported_lrc(lyrics_text, track.original.duration_ms)
+        if not cues and lyrics_text.strip():
+            silent_message(self, "warn", "Save Lyrics", "Could not parse LRC timestamps.")
+            return
+            
+        project.snapshot_edits()
+        project.save_transcript(track, language, "imported", cues)
+        project.save()
+        self._sync_actions()
+        if self._selected_track_id() == track_id and self.conversation.language.currentText() == language:
+            self._refresh_transcript(track, preferred=language)
+
+    def _edit_lyrics_web(self) -> None:
+        import webbrowser
+        import json
+        
+        project = self._ctx.current_project
+        track = self._selected_track()
+        if project is None or track is None:
+            silent_message(self, "info", "Transcript", "Select a track first.")
+            return
+            
+        language = self.conversation.language.currentText().strip()
+        transcript = project.load_transcript(track, language) if language else None
+        if transcript is None or not transcript.cues:
+            silent_message(self, "info", "Edit", "This track has no lyrics to edit.")
+            return
+            
+        # Audio file URL
+        audio_path = (project.root / track.original.path).resolve()
+        audio_url = audio_path.as_uri()
+        
+        # Lyrics file URL
+        lrc_text = dump_lrc(transcript.cues, title=track.name, language=language)
+        
+        try:
+            html_path = Path("lyrics_editor/index.html")
+            js_path = Path("lyrics_editor/lyrics.js")
+            html_content = html_path.read_text(encoding="utf-8")
+            js_content = js_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            silent_message(self, "warn", "Edit", f"Could not read editor files: {exc}")
+            return
+            
+        # Inline lyrics.js
+        html_content = html_content.replace('<script src="lyrics.js"></script>', f"<script>\n{js_content}\n</script>")
+        
+        server_port = ensure_lyrics_server(self, 1024)
+
+        # Inject our data variables
+        script_injection = f"""
+        <script>
+        window.LYRIA_AUDIO_URL = {json.dumps(audio_url)};
+        window.LYRIA_LYRICS_TEXT = {json.dumps(lrc_text)};
+        window.LYRIA_SAVE_URL = {json.dumps(f"http://127.0.0.1:{server_port}/save")};
+        window.LYRIA_TRACK_ID = {json.dumps(track.id)};
+        window.LYRIA_LANGUAGE = {json.dumps(language)};
+        </script>
+        """
+        html_content = html_content.replace("</head>", f"{script_injection}</head>")
+        
+        temp_html_path = project.root / f".lyria_editor_{track.id}_{language}.html"
+        try:
+            temp_html_path.write_text(html_content, encoding="utf-8")
+            self._web_editor_files.append(temp_html_path)
+        except OSError as exc:
+            silent_message(self, "warn", "Edit", f"Could not write temporary HTML file: {exc}")
+            return
+            
+        webbrowser.open(temp_html_path.as_uri())
+
     def _translate_transcript(self) -> None:
         project = self._ctx.current_project
         track = self._selected_track()
@@ -875,14 +984,17 @@ class MainWindow(QMainWindow):
         if transcript is None or not transcript.cues:
             silent_message(self, "info", "Translate", "This track has no lyrics to translate.")
             return
-        target, ok = QInputDialog.getText(
+        target_name, ok = QInputDialog.getItem(
             self,
             "Translate lyrics",
-            "Translate into (BCP-47 code):",
+            "Translate into:",
+            list(bcp_47_lang_codes.values()),
+            0,
+            False,
         )
-        if not ok or not target.strip():
+        if not ok or not target_name:
             return
-        target = target.strip()
+        target = bcp_47_lang_codes_inv[target_name]
         existing = next((item for item in track.transcripts if item.language == target), None)
         if existing is not None and not ask_yes_no(
             self,
@@ -890,7 +1002,7 @@ class MainWindow(QMainWindow):
             f"Replace the existing “{target}” lyrics for this track?",
         ):
             return
-        model_id = self._ctx.settings.translation_model.strip()
+        model_id = self._ctx.settings.translation_model
         if not model_id:
             silent_message(self, "warn", "Translate", "No translation model is set.")
             return
@@ -1318,6 +1430,8 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard():
             event.ignore()
             return
+        self._cleanup_web_editor_files()
+        stop_lyrics_server()
         self.editing.player.stop()
         if self._chat_window is not None:
             self._chat_window.close()
