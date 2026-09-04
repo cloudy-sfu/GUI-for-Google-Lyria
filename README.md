@@ -9,8 +9,6 @@ Graphic user interface for generating and editing audio with Google Lyria
 
 [librosa](https://github.com/librosa/librosa) (modified)
 
-[Lyric synchronization](https://github.com/cloudy-sfu/Lyric-synchronization) (require web browser)
-
 
 
 ## Install

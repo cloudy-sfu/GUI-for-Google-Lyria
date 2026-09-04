@@ -40,6 +40,13 @@ def size_chat_window(window: QWidget) -> None:
     window.resize(QSize(width, height))
 
 
+def size_lyrics_editor(window: QWidget) -> None:
+    screen = window.screen().availableGeometry()
+    width = round(min(0.52 * screen.width(), 1.15 * screen.height()))
+    height = round(min(0.82 * screen.height(), width * 1.35))
+    window.resize(QSize(width, height))
+
+
 def em_px(widget: QWidget, ems: float) -> int:
     """Pixels for a CSS-style ``em`` count, tied to the widget font size.
 

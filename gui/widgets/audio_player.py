@@ -59,30 +59,31 @@ class AudioPlayerWidget(QWidget):
         self._rate_anchor_usecs = 0
         self._transport_icons: dict[QPushButton, QStyle.StandardPixmap] = {}
         self._play_pause_status = ""
+        self._reset_rate_inline = False
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        vol_row = QHBoxLayout()
+        self._vol_row = QHBoxLayout()
         self.play_pause_btn = self._transport_button(
             QStyle.StandardPixmap.SP_MediaPlay, "Play"
         )
         self.stop_btn = self._transport_button(QStyle.StandardPixmap.SP_MediaStop, "Stop")
         self.play_pause_btn.clicked.connect(self.toggle_play_pause)
         self.stop_btn.clicked.connect(self.stop)
-        vol_row.addWidget(self.play_pause_btn)
-        vol_row.addWidget(self.stop_btn)
-        vol_row.addWidget(QLabel("Volume"))
+        self._vol_row.addWidget(self.play_pause_btn)
+        self._vol_row.addWidget(self.stop_btn)
+        self._vol_row.addWidget(QLabel("Volume"))
         self.volume = QSlider(Qt.Orientation.Horizontal)
         self.volume.setRange(0, 100)
         self.volume.setValue(80)
         self.volume.setToolTip("Master volume")
         self.volume.valueChanged.connect(self._on_volume)
         self._slider_gap = QWidget()
-        vol_row.addWidget(self.volume)
-        vol_row.addWidget(self._slider_gap)
-        vol_row.addWidget(QLabel("Playback"))
+        self._vol_row.addWidget(self.volume)
+        self._vol_row.addWidget(self._slider_gap)
+        self._vol_row.addWidget(QLabel("Playback"))
         self.playback = QSlider(Qt.Orientation.Horizontal)
         self.playback.setRange(0, _RATE_SLIDER_MAX)
         self.playback.setValue(_slider_from_rate(1.0))
@@ -96,11 +97,16 @@ class AudioPlayerWidget(QWidget):
         self.speed_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
-        vol_row.addWidget(self.playback)
-        vol_row.addWidget(self.speed_label)
-        vol_row.addStretch(1)
+        self._vol_row.addWidget(self.playback)
+        self._vol_row.addWidget(self.speed_label)
+        self._vol_row.addStretch(1)
 
-        transport = QHBoxLayout()
+        self._transport = QWidget()
+        self._transport.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
+        )
+        transport = QHBoxLayout(self._transport)
+        transport.setContentsMargins(0, 0, 0, 0)
         self.mixed_btn = QPushButton("All tracks")
         self.mixed_btn.setEnabled(False)
         self.mixed_btn.setToolTip("Load the whole mix and play it")
@@ -113,8 +119,8 @@ class AudioPlayerWidget(QWidget):
         transport.addWidget(self.reset_rate_btn)
         transport.addStretch(1)
 
-        layout.addLayout(transport)
-        layout.addLayout(vol_row)
+        layout.addWidget(self._transport)
+        layout.addLayout(self._vol_row)
         self._apply_em_sizes()
 
         self._timer = QTimer(self)
@@ -170,6 +176,25 @@ class AudioPlayerWidget(QWidget):
 
     def set_mixed_enabled(self, enabled: bool) -> None:
         self.mixed_btn.setEnabled(enabled)
+
+    def set_mix_button_visible(self, visible: bool) -> None:
+        self.mixed_btn.setVisible(visible)
+        self._sync_transport_visible()
+
+    def place_reset_rate_inline(self) -> None:
+        """Put the 1x reset after the playback rate label instead of on its own row."""
+        if self._reset_rate_inline:
+            return
+        self._vol_row.insertWidget(
+            self._vol_row.indexOf(self.speed_label) + 1, self.reset_rate_btn
+        )
+        self._reset_rate_inline = True
+        self._sync_transport_visible()
+
+    def _sync_transport_visible(self) -> None:
+        self._transport.setVisible(
+            self.mixed_btn.isVisible() or not self._reset_rate_inline
+        )
 
     def set_clip(
         self,

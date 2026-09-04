@@ -4,7 +4,7 @@ import uuid
 from dataclasses import replace
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, QObject, Qt, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, Qt, QThreadPool, QTimer
 from PyQt6.QtGui import QAction, QCloseEvent, QShowEvent, QWheelEvent
 from PyQt6.QtWidgets import (
     QAbstractScrollArea,
@@ -32,11 +32,11 @@ from gui.dialogs.align_dialog import AlignDialog, AlignTrack
 from gui.dialogs.channels_dialog import ChannelsDialog
 from gui.dialogs.cut_dialog import CutDialog
 from gui.dialogs.fade_dialog import FadeDialog
+from gui.dialogs.lyrics_editor_dialog import LyricsEditorDialog
 from gui.dialogs.preferences_dialog import PreferencesDialog
 from gui.dialogs.shortcuts_dialog import ShortcutsDialog
 from gui.dialogs.speed_dialog import SpeedDialog
 from gui.dialogs.timeline_help_dialog import TimelineHelpDialog
-from gui.lyrics_server import ensure_lyrics_server, stop_lyrics_server
 from gui.messages import ask_save_discard_cancel, ask_yes_no, silent_message
 from gui.style import (
     format_clock_ms,
@@ -130,15 +130,12 @@ def _align_track(project: Project, track: Track) -> AlignTrack:
 
 
 class MainWindow(QMainWindow):
-    web_lyrics_saved = pyqtSignal(str, str, str)
-
     def __init__(self, ctx: AppContext, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._ctx = ctx
         self._cache = RenderCache()
         self._pool = QThreadPool.globalInstance()
         self._workers: list[FnWorker] = []
-        self._web_editor_files: list[Path] = []
         self._play_track_id: str | None = None
         self._autoplay_next = False
         self._chat_window: ChatWindow | None = None
@@ -175,7 +172,6 @@ class MainWindow(QMainWindow):
         central = QWidget()
         central.setLayout(root_layout)
         self.setCentralWidget(central)
-        self.web_lyrics_saved.connect(self._on_web_lyrics_saved)
         self._sync_actions()
         self._show_session_warnings()
         app = QApplication.instance()
@@ -252,15 +248,17 @@ class MainWindow(QMainWindow):
         self._translate_lyrics_action = QAction("&Translate", self)
         self._translate_lyrics_action.setToolTip("Translate lyrics with the model set in Settings")
         self._translate_lyrics_action.triggered.connect(self._translate_transcript)
-        self._edit_lyrics_web_action = QAction("&Edit tool (web)", self)
-        self._edit_lyrics_web_action.setToolTip("Open in local web editor")
-        self._edit_lyrics_web_action.triggered.connect(self._edit_lyrics_web)
+        self._edit_lyrics_action = QAction("&Synchronize...", self)
+        self._edit_lyrics_action.setToolTip(
+            "Stamp lyric timestamps while the track plays"
+        )
+        self._edit_lyrics_action.triggered.connect(self._edit_lyrics)
         lyric_menu = QMenu("&Lyrics", self)
         lyric_menu.addActions([
             self._import_lyrics_action,
             self._export_lyrics_action,
             self._translate_lyrics_action,
-            self._edit_lyrics_web_action,
+            self._edit_lyrics_action,
         ])
         menu.addMenu(lyric_menu)
 
@@ -342,7 +340,7 @@ class MainWindow(QMainWindow):
         self._import_lyrics_action.setEnabled(idle and getattr(self, "_can_import", False))
         self._export_lyrics_action.setEnabled(idle and getattr(self, "_can_export", False))
         self._translate_lyrics_action.setEnabled(idle and getattr(self, "_can_translate", False))
-        self._edit_lyrics_web_action.setEnabled(idle and getattr(self, "_can_export", False))
+        self._edit_lyrics_action.setEnabled(idle and getattr(self, "_can_export", False))
         self.conversation.set_busy(busy)
         self._translate_lyrics_action.setText("Translating..." if busy else "&Translate")
 
@@ -350,18 +348,9 @@ class MainWindow(QMainWindow):
         self._transcript_busy = busy
         self._apply_transcript_actions_enabled()
 
-    def _cleanup_web_editor_files(self) -> None:
-        for path in self._web_editor_files:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                pass
-        self._web_editor_files.clear()
-
     def _set_project(self, project: Project | None) -> None:
         self.editing.player.stop()
         self._cache.invalidate()
-        self._cleanup_web_editor_files()
         self._play_track_id = None
         self.conversation.clear_warnings()
         if self._chat_window is not None:
@@ -887,84 +876,44 @@ class MainWindow(QMainWindow):
             return
         silent_message(self, "info", "Export", f"Wrote {dest}")
 
-    def _on_web_lyrics_saved(self, track_id: str, language: str, lyrics_text: str) -> None:
-        project = self._ctx.current_project
-        if project is None:
-            return
-        track = project.track_by_id(track_id)
-        if track is None:
-            return
-            
-        cues = parse_imported_lrc(lyrics_text, track.original.duration_ms)
-        if not cues and lyrics_text.strip():
-            silent_message(self, "warn", "Save Lyrics", "Could not parse LRC timestamps.")
-            return
-            
-        project.snapshot_edits()
-        project.save_transcript(track, language, "imported", cues)
-        project.save()
-        self._sync_actions()
-        if self._selected_track_id() == track_id and self.conversation.language.currentText() == language:
-            self._refresh_transcript(track, preferred=language)
-
-    def _edit_lyrics_web(self) -> None:
-        import webbrowser
-        import json
-        
+    def _edit_lyrics(self) -> None:
         project = self._ctx.current_project
         track = self._selected_track()
         if project is None or track is None:
             silent_message(self, "info", "Transcript", "Select a track first.")
             return
-            
         language = self.conversation.language.currentText().strip()
         transcript = project.load_transcript(track, language) if language else None
         if transcript is None or not transcript.cues:
             silent_message(self, "info", "Edit", "This track has no lyrics to edit.")
             return
-            
-        # Audio file URL
-        audio_path = (project.root / track.original.path).resolve()
-        audio_url = audio_path.as_uri()
-        
-        # Lyrics file URL
-        lrc_text = dump_lrc(transcript.cues, title=track.name, language=language)
-        
-        try:
-            html_path = Path("lyrics_editor/index.html")
-            js_path = Path("lyrics_editor/lyrics.js")
-            html_content = html_path.read_text(encoding="utf-8")
-            js_content = js_path.read_text(encoding="utf-8")
-        except OSError as exc:
-            silent_message(self, "warn", "Edit", f"Could not read editor files: {exc}")
-            return
-            
-        # Inline lyrics.js
-        html_content = html_content.replace('<script src="lyrics.js"></script>', f"<script>\n{js_content}\n</script>")
-        
-        server_port = ensure_lyrics_server(self, 1024)
+        self.editing.player.pause()
+        self._set_transcript_busy(True)
+        cues = list(transcript.cues)
+        title = track.name
 
-        # Inject our data variables
-        script_injection = f"""
-        <script>
-        window.LYRIA_AUDIO_URL = {json.dumps(audio_url)};
-        window.LYRIA_LYRICS_TEXT = {json.dumps(lrc_text)};
-        window.LYRIA_SAVE_URL = {json.dumps(f"http://127.0.0.1:{server_port}/save")};
-        window.LYRIA_TRACK_ID = {json.dumps(track.id)};
-        window.LYRIA_LANGUAGE = {json.dumps(language)};
-        </script>
-        """
-        html_content = html_content.replace("</head>", f"{script_injection}</head>")
-        
-        temp_html_path = project.root / f".lyria_editor_{track.id}_{language}.html"
-        try:
-            temp_html_path.write_text(html_content, encoding="utf-8")
-            self._web_editor_files.append(temp_html_path)
-        except OSError as exc:
-            silent_message(self, "warn", "Edit", f"Could not write temporary HTML file: {exc}")
-            return
-            
-        webbrowser.open(temp_html_path.as_uri())
+        def work():
+            return render_track(track, project.root, cache=self._cache)
+
+        def ok_result(clip) -> None:
+            self._set_transcript_busy(False)
+            dialog = LyricsEditorDialog(cues, clip, title=title, parent=self)
+            if dialog.exec() != dialog.DialogCode.Accepted:
+                return
+            edited = dialog.cues()
+            if not edited:
+                return
+            project.snapshot_edits()
+            project.save_transcript(track, language, "imported", edited)
+            project.save()
+            self._sync_actions()
+            self._refresh_transcript(track, preferred=language)
+
+        def err(message: str) -> None:
+            self._set_transcript_busy(False)
+            silent_message(self, "warn", "Edit", message)
+
+        self._run(work, ok_result, err)
 
     def _translate_transcript(self) -> None:
         project = self._ctx.current_project
@@ -1430,8 +1379,6 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard():
             event.ignore()
             return
-        self._cleanup_web_editor_files()
-        stop_lyrics_server()
         self.editing.player.stop()
         if self._chat_window is not None:
             self._chat_window.close()
